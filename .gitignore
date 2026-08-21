@@ -12,3 +12,5 @@ Generative_Forensics_Project/Dataset/AI_Images/*
 Generative_Forensics_Project/model.joblib
 Generative_Forensics_Project/score_*.csv
 Generative_Forensics_Project/results/
+__pycache__/
+*.pyc
