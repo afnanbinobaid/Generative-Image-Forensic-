@@ -42,6 +42,8 @@ NAMES_PATH  = Path("filenames_crop.txt")
 OUT_DIR     = Path("results")
 RANDOM_SEED = 42
 TEST_FRAC   = 0.20
+CAL_FRAC    = 0.10   # share of the unseen generator used to reposition the
+                     # decision threshold in Experiment B
 
 # Feature block layout, matching feature_extractor.m. Ranges are 0-based and
 # end-exclusive, so they can index numpy arrays directly.
@@ -197,40 +199,96 @@ def experiment_a(X, y):
 
 
 # ----------------------------------------------------------------- experiment B
+def _split_idx(idx, frac, rng):
+    """Split an index array into a small calibration slice and a larger rest."""
+    idx = np.array(idx, copy=True)
+    rng.shuffle(idx)
+    n_cal = max(1, int(round(len(idx) * frac)))
+    return idx[:n_cal], idx[n_cal:]
+
+
+def best_threshold(y_true, prob):
+    """Threshold maximising Youden's J, which maximises balanced accuracy."""
+    fpr, tpr, thr = roc_curve(y_true, prob)
+    return float(thr[np.argmax(tpr - fpr)])
+
+
 def experiment_b(X, y, generator):
+    """Leave-one-generator-out, with and without threshold recalibration.
+
+    The model is never trained on the held-out generator. A small labelled
+    slice of it (CAL_FRAC) is used only to reposition one number - the decision
+    threshold - and the reported scores come from the remaining images, which
+    neither training nor calibration has touched.
+    """
     gens = sorted({g for g in generator[y == 1]})
     if len(gens) < 2:
         print("\nSkipping Experiment B - need at least two generators, found "
               f"{gens}")
         return None
 
-    print("\n" + "=" * 66)
+    print("\n" + "=" * 78)
     print("EXPERIMENT B - leave-one-generator-out")
-    print("=" * 66)
+    print("=" * 78)
     print(f"generators found: {', '.join(gens)}")
 
-    real_idx = np.flatnonzero(y == 0)
     rng = np.random.default_rng(RANDOM_SEED)
+    real_idx = np.flatnonzero(y == 0)
     rng.shuffle(real_idx)
     half = len(real_idx) // 2
-    real_tr, real_te = real_idx[:half], real_idx[half:]
+    real_tr, real_held = real_idx[:half], real_idx[half:]
 
-    rows = {}
+    rows = []
     for held_out in gens:
         train_gen = [g for g in gens if g != held_out]
-        tr_ai = np.flatnonzero((y == 1) & np.isin(generator, train_gen))
-        te_ai = np.flatnonzero((y == 1) & (generator == held_out))
+        tr_ai   = np.flatnonzero((y == 1) & np.isin(generator, train_gen))
+        held_ai = np.flatnonzero((y == 1) & (generator == held_out))
 
-        tr = np.concatenate([real_tr, tr_ai])
-        te = np.concatenate([real_te, te_ai])
+        cal_real, ev_real = _split_idx(real_held, CAL_FRAC, rng)
+        cal_ai,   ev_ai   = _split_idx(held_ai,   CAL_FRAC, rng)
+
+        tr  = np.concatenate([real_tr,  tr_ai])
+        cal = np.concatenate([cal_real, cal_ai])
+        ev  = np.concatenate([ev_real,  ev_ai])
 
         model = RandomForestClassifier(n_estimators=300, n_jobs=-1,
                                        random_state=RANDOM_SEED)
-        label = f"train {'+'.join(train_gen)} -> test {held_out}"
-        print(f"  {label}  ({len(tr)} train / {len(te)} test rows)")
-        rows[label] = evaluate(model, X[tr], y[tr], X[te], y[te])
+        model.fit(X[tr], y[tr])
+        prob_cal = model.predict_proba(X[cal])[:, 1]
+        prob_ev  = model.predict_proba(X[ev])[:, 1]
 
-    print_table(rows, "Cross-generator generalisation (Random Forest)")
+        thr = best_threshold(y[cal], prob_cal)
+        pred_default = (prob_ev >= 0.5).astype(int)
+        pred_tuned   = (prob_ev >= thr).astype(int)
+
+        print(f"  train {'+'.join(train_gen)} -> test {held_out}:  "
+              f"{len(tr)} train / {len(cal)} calibrate / {len(ev)} evaluate")
+
+        rows.append({
+            "held_out": held_out,
+            "threshold": thr,
+            "roc_auc": roc_auc_score(y[ev], prob_ev),
+            "acc_default":  accuracy_score(y[ev], pred_default),
+            "rec_default":  recall_score(y[ev], pred_default, zero_division=0),
+            "acc_tuned":    accuracy_score(y[ev], pred_tuned),
+            "rec_tuned":    recall_score(y[ev], pred_tuned, zero_division=0),
+            "f1_tuned":     f1_score(y[ev], pred_tuned, zero_division=0),
+            "y_ev": y[ev], "prob_ev": prob_ev,
+        })
+
+    print("\nCross-generator generalisation (Random Forest)")
+    print("-" * 78)
+    print(f"{'held-out generator':<22}{'ROC-AUC':>9}{'acc@0.5':>9}{'recall':>8}"
+          f"{'  |':>4}{'thresh':>8}{'acc@cal':>9}{'recall':>8}{'F1':>8}")
+    for r in rows:
+        print(f"{r['held_out']:<22}{r['roc_auc']:>9.4f}{r['acc_default']:>9.4f}"
+              f"{r['rec_default']:>8.4f}{'  |':>4}{r['threshold']:>8.3f}"
+              f"{r['acc_tuned']:>9.4f}{r['rec_tuned']:>8.4f}{r['f1_tuned']:>8.4f}")
+
+    gain = np.mean([r["acc_tuned"] - r["acc_default"] for r in rows])
+    print(f"\nMean accuracy recovered by moving the threshold alone: "
+          f"{gain:+.1%}")
+    print("The model is identical in both columns - only the cutoff moved.")
     return rows
 
 
@@ -285,6 +343,51 @@ def chart_confusion(y_te, pred, name, path):
     ax.grid(which="minor", color=SURFACE, linewidth=2.5)
     ax.grid(which="major", visible=False)
     style_axes(ax, "Predicted", "Actual", f"Confusion matrix - {name}")
+    fig.tight_layout()
+    fig.savefig(path, dpi=200, facecolor=SURFACE)
+    plt.close(fig)
+
+
+def chart_thresholds(rows, path):
+    """Where each generator's scores land, and why one cutoff cannot serve both.
+
+    Two series, so identity is carried by a legend and by fill/outline, not by
+    hue alone; the two threshold lines are directly labelled.
+    """
+    n = len(rows)
+    fig, axes = plt.subplots(1, n, figsize=(6.2 * n, 4.8), facecolor=SURFACE,
+                             squeeze=False)
+
+    bins = np.linspace(0, 1, 41)
+    for ax, r in zip(axes[0], rows):
+        for mask, colour, name in ((r["y_ev"] == 0, SERIES[0], "Real"),
+                                   (r["y_ev"] == 1, SERIES[1], "AI")):
+            ax.hist(r["prob_ev"][mask], bins=bins, color=colour, alpha=0.5,
+                    histtype="stepfilled", label=name)
+            ax.hist(r["prob_ev"][mask], bins=bins, color=colour, linewidth=2,
+                    histtype="step")
+
+        # Labels sit rotated alongside their lines, at different heights, so
+        # they clear the legend and each other even when the two thresholds
+        # land close together.
+        top = ax.get_ylim()[1]
+        ax.axvline(0.5, color=INK_MUTED, linewidth=1.5, linestyle="--")
+        ax.text(0.5, top * 0.34, "  default 0.5", color=INK_MUTED, fontsize=9,
+                rotation=90, ha="left", va="center")
+        ax.axvline(r["threshold"], color=INK, linewidth=2)
+        ax.text(r["threshold"], top * 0.66, f"  calibrated {r['threshold']:.2f}",
+                color=INK, fontsize=9, fontweight="bold",
+                rotation=90, ha="left", va="center")
+
+        style_axes(ax, "Model score  (0 = real, 1 = AI)", "Images",
+                   f"Unseen generator: {r['held_out']}")
+        ax.set_xlim(0, 1)
+        ax.grid(True, axis="y", color=GRID, linewidth=0.8)
+        ax.set_axisbelow(True)
+        leg = ax.legend(frameon=False, fontsize=9.5, loc="upper center")
+        for t in leg.get_texts():
+            t.set_color(INK)
+
     fig.tight_layout()
     fig.savefig(path, dpi=200, facecolor=SURFACE)
     plt.close(fig)
@@ -354,7 +457,7 @@ def main():
     OUT_DIR.mkdir(exist_ok=True)
 
     results, y_te = experiment_a(X, y)
-    experiment_b(X, y, generator)
+    b_rows = experiment_b(X, y, generator)
 
     best = max(results, key=lambda k: results[k]["roc_auc"])
     print(f"\nBest by ROC-AUC: {best}")
@@ -364,9 +467,12 @@ def main():
                     OUT_DIR / "confusion_matrix.png")
     chart_importance(results["Random Forest"]["model"],
                      OUT_DIR / "feature_importance.png")
+    if b_rows:
+        chart_thresholds(b_rows, OUT_DIR / "score_distributions.png")
 
     print(f"\nCharts written to {OUT_DIR.resolve()}")
-    print("  roc_curves.png  confusion_matrix.png  feature_importance.png")
+    print("  roc_curves.png  confusion_matrix.png  feature_importance.png"
+          "  score_distributions.png")
 
 
 if __name__ == "__main__":
