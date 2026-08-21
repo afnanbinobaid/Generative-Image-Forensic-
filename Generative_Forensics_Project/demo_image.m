@@ -4,24 +4,26 @@ function demo_image(imgPath)
 %   demo_image             opens a file picker
 %   demo_image('cat.jpg')  analyses that file directly
 %
-%   Opens one figure showing the verdict and, beside it, the signal processing
-%   the verdict is actually based on: the analysed crop, its Fourier spectrum,
-%   the finest wavelet detail band, and the high-pass noise residual. Those
-%   panels are the point of the demonstration - they show the decision comes
-%   from measurable DSP evidence rather than an opaque learned texture.
+%   Splits the work the way the project does: MATLAB measures the image, Python
+%   decides what it is. The 230 DSP features come from extractImageFeatures() -
+%   the same function feature_extractor.m used to build the training set - and
+%   are handed to predict_image.py, which owns the classifier.
 %
-%   Features come from extractImageFeatures(), the same function
-%   feature_extractor.m used to build the training set, so what is measured
-%   here cannot drift from what the model was trained on.
+%   Also opens a figure showing the signal processing behind the verdict: the
+%   analysed crop, its Fourier spectrum, the finest wavelet detail band, and the
+%   high-pass noise residual.
 %
-%   Run train_model.m once first to produce model.mat.
+%   Before the first run:  python train_model.py   (produces model.joblib)
 
-    MODEL_PATH = 'model.mat';
+    FEATURES_CSV = 'demo_features.csv';
+    PY_SCRIPT    = 'predict_image.py';
 
-    if ~isfile(MODEL_PATH)
+    if ~isfile(PY_SCRIPT)
+        error('demo_image:noScript', 'Cannot find %s', fullfile(pwd, PY_SCRIPT));
+    end
+    if ~isfile('model.joblib')
         error('demo_image:noModel', ...
-              ['Cannot find %s - run train_model.m first.'], ...
-              fullfile(pwd, MODEL_PATH));
+              'Cannot find model.joblib - run  python train_model.py  first.');
     end
 
     if nargin < 1 || isempty(imgPath)
@@ -34,32 +36,47 @@ function demo_image(imgPath)
         imgPath = fullfile(p, f);
     end
 
-    S = load(MODEL_PATH);
-
-    %% ---------------------------------------------------------- measure
+    %% ------------------------------------------------- measure, in MATLAB
     original = imread(imgPath);
     [features, crop, grayD] = extractImageFeatures(imgPath, 'crop');
 
-    [~, scores] = predict(S.model, features);
-    prob = scores(2);
+    % One row, no label - predict_image.py expects exactly the 230 features.
+    writematrix(features, FEATURES_CSV);
 
-    isAI    = prob >= S.threshold;
-    if isAI
-        verdict   = 'AI-GENERATED';
-        verdictC  = [0.85 0.30 0.10];
-        headroom  = 1 - S.threshold;
-    else
-        verdict   = 'REAL PHOTOGRAPH';
-        verdictC  = [0.05 0.42 0.72];
-        headroom  = S.threshold;
+    [~, name, ext] = fileparts(imgPath);
+    fprintf('\nMeasured %s%s -> %d features -> handing to Python\n\n', ...
+            name, ext, numel(features));
+
+    %% ------------------------------------------------- classify, in Python
+    cmd = sprintf('python "%s" "%s"', PY_SCRIPT, FEATURES_CSV);
+    [status, output] = system(cmd);
+
+    if status ~= 0
+        % Windows installs sometimes expose only the launcher, not `python`.
+        [status, output] = system(sprintf('py "%s" "%s"', PY_SCRIPT, FEATURES_CSV));
     end
-    margin   = abs(prob - S.threshold) / max(headroom, 1e-9);
-    if margin > 0.6
-        strength = 'strong';
-    elseif margin > 0.25
-        strength = 'moderate';
-    else
-        strength = 'weak';
+
+    if status ~= 0
+        fprintf(2, 'Could not run Python. Output was:\n%s\n', output);
+        fprintf(2, ['\nThe features were still written to %s - you can get the\n' ...
+                    'verdict by running this yourself:\n    python %s %s\n'], ...
+                FEATURES_CSV, PY_SCRIPT, FEATURES_CSV);
+        return;
+    end
+
+    [prob, threshold, verdict] = parseVerdict(output);
+    disp(stripMachineLines(output));
+
+    if isnan(prob)
+        fprintf(2, 'Could not read a score back from Python; skipping the figure.\n');
+        return;
+    end
+
+    [h, w, ~] = size(original);
+    if h < 256 || w < 256
+        fprintf(2, ['  UNRELIABLE: image is %dx%d, smaller than the 256x256\n' ...
+                    '  analysis window, so it was scaled up before measurement.\n' ...
+                    '  Every training image was large enough to crop.\n'], w, h);
     end
 
     %% -------------------------------------------------- DSP intermediates
@@ -70,36 +87,17 @@ function demo_image(imgPath)
 
     residual = grayD - imgaussfilt(grayD, 1);
 
-    %% ------------------------------------------------------------ report
-    [~, name, ext] = fileparts(imgPath);
-    fprintf('\n=============================================\n');
-    fprintf('  %s%s\n', name, ext);
-    fprintf('  Verdict   : %s\n', verdict);
-    fprintf('  Score     : %.4f   (threshold %.4f)\n', prob, S.threshold);
-    fprintf('  Separation: %s\n', strength);
-    fprintf('=============================================\n');
-
-    [h, w, ~] = size(original);
-    if h < 256 || w < 256
-        fprintf(2, ['  UNRELIABLE: image is %dx%d, smaller than the 256x256\n' ...
-                    '  analysis window, so it was scaled up before measurement.\n' ...
-                    '  Every training image was large enough to crop, so this\n' ...
-                    '  result is outside what the model has seen.\n'], w, h);
+    isAI = prob >= threshold;
+    if isAI
+        verdictC = [0.85 0.30 0.10];
+    else
+        verdictC = [0.05 0.42 0.72];
     end
-
-    fprintf('\n  %-34s %10s %10s %10s\n', 'measurement', 'this', 'real', 'AI');
-    fprintf('  %s\n', repmat('-', 1, 66));
-    for i = 1:6
-        c = S.topFeatures(i);
-        fprintf('  %-34s %10.4g %10.4g %10.4g\n', ...
-                describeFeature(c), features(c), S.meanReal(c), S.meanAI(c));
-    end
-    fprintf('\n');
 
     %% ------------------------------------------------------------ figure
-    % The console report above is the demonstration's core output. Plotting is
-    % wrapped so that a graphics problem on an unfamiliar machine degrades to
-    % "no picture" rather than taking the whole demo down mid-presentation.
+    % The printed verdict above is the demonstration's real output. Plotting is
+    % guarded so a graphics problem on an unfamiliar machine degrades to "no
+    % picture" rather than taking the demo down mid-presentation.
     try
         figure('Name', sprintf('Detector - %s%s', name, ext), ...
                'Color', 'w', 'Position', [80 80 1180 700]);
@@ -132,14 +130,13 @@ function demo_image(imgPath)
         axis image; axis off; colormap(gca, gray(256));
         title('High-pass noise residual', 'FontSize', 11);
 
-        % Verdict panel: the score placed on a bar with the threshold marked.
         subplot(2,3,6);
         hold on;
-        fill([0 S.threshold S.threshold 0], [0 0 1 1], [0.05 0.42 0.72], ...
+        fill([0 threshold threshold 0], [0 0 1 1], [0.05 0.42 0.72], ...
              'FaceAlpha', 0.15, 'EdgeColor', 'none');
-        fill([S.threshold 1 1 S.threshold], [0 0 1 1], [0.85 0.30 0.10], ...
+        fill([threshold 1 1 threshold], [0 0 1 1], [0.85 0.30 0.10], ...
              'FaceAlpha', 0.15, 'EdgeColor', 'none');
-        plot([S.threshold S.threshold], [0 1], 'k-', 'LineWidth', 2);
+        plot([threshold threshold], [0 1], 'k-', 'LineWidth', 2);
         plot(prob, 0.5, 'o', 'MarkerSize', 15, 'MarkerFaceColor', verdictC, ...
              'MarkerEdgeColor', 'w', 'LineWidth', 2);
         text(0.03, 0.15, 'REAL', 'Color', [0.05 0.42 0.72], 'FontWeight', 'bold');
@@ -149,8 +146,7 @@ function demo_image(imgPath)
              'FontWeight', 'bold', 'HorizontalAlignment', 'center');
         xlim([0 1]); ylim([0 1]);
         set(gca, 'YTick', [], 'XTick', [0 0.5 1], 'Box', 'off');
-        title({verdict, sprintf('score %.3f vs threshold %.3f  (%s)', ...
-               prob, S.threshold, strength)}, ...
+        title({verdict, sprintf('score %.3f  vs  threshold %.3f', prob, threshold)}, ...
               'FontSize', 13, 'Color', verdictC);
         hold off;
 
@@ -158,4 +154,44 @@ function demo_image(imgPath)
         fprintf(2, '  (figure could not be drawn: %s)\n', figErr.message);
         fprintf(2, '  The verdict above is still valid.\n');
     end
+end
+
+
+%% ================================================================
+%  Local functions
+%  ================================================================
+
+function [prob, threshold, verdict] = parseVerdict(output)
+%PARSEVERDICT  Read the machine-readable header predict_image.py prints first.
+
+    prob      = NaN;
+    threshold = NaN;
+    verdict   = '';
+
+    lines = strsplit(output, {sprintf('\n'), sprintf('\r')});
+    for i = 1:numel(lines)
+        line = strtrim(lines{i});
+        if startsWith(line, 'SCORE ')
+            prob = str2double(line(7:end));
+        elseif startsWith(line, 'THRESHOLD ')
+            threshold = str2double(line(11:end));
+        elseif startsWith(line, 'VERDICT ')
+            verdict = strtrim(line(9:end));
+        end
+    end
+end
+
+
+function txt = stripMachineLines(output)
+%STRIPMACHINELINES  Drop the parsed header so only the human report is shown.
+
+    lines = strsplit(output, sprintf('\n'));
+    keep  = true(size(lines));
+    for i = 1:numel(lines)
+        line = strtrim(lines{i});
+        keep(i) = ~(startsWith(line, 'SCORE ') || ...
+                    startsWith(line, 'THRESHOLD ') || ...
+                    startsWith(line, 'VERDICT '));
+    end
+    txt = strjoin(lines(keep), sprintf('\n'));
 end
