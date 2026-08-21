@@ -354,7 +354,9 @@ function feats = waveletFeatures(channel, waveName, level)
 
     [C, S] = wavedec2(chD, level, waveName);
 
-    cA2 = appcoef2(level, C, S, waveName);
+    % Argument order is (C, S, wname, N) - the coefficient vector and the
+    % bookkeeping matrix come first, matching detcoef2's (O, C, S, N).
+    cA2 = appcoef2(C, S, waveName, level);
     [cH2, cV2, cD2] = detcoef2('all', C, S, 2);
     [cH1, cV1, cD1] = detcoef2('all', C, S, 1);
 
