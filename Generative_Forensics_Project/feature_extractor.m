@@ -21,7 +21,10 @@
 clear; clc;
 
 %% ---------------------------------------------------------------- config
-IMG_SIZE      = [256 256];   % all images resized to this
+IMG_SIZE      = [256 256];   % every image is reduced to this
+PREPROCESS    = 'crop';      % 'crop'   = centre-crop at native scale
+                             % 'resize' = scale the whole frame down
+                             % See standardiseSize() for why this matters.
 NUM_FEATURES  = 230;         % feature count, excluding the label
 NUM_RINGS     = 20;          % Block C radial bins
 GLCM_LEVELS   = 8;           % graycomatrix quantisation levels
@@ -32,8 +35,8 @@ PROGRESS_STEP = 100;         % print a progress line every N images
 projectRoot = pwd;
 realDir     = fullfile(projectRoot, 'Dataset', 'Real_Images');
 aiDir       = fullfile(projectRoot, 'Dataset', 'AI_Images');
-csvPath     = fullfile(projectRoot, 'dataset.csv');
-namesPath   = fullfile(projectRoot, 'filenames.txt');
+csvPath     = fullfile(projectRoot, sprintf('dataset_%s.csv', PREPROCESS));
+namesPath   = fullfile(projectRoot, sprintf('filenames_%s.txt', PREPROCESS));
 
 if ~isfolder(realDir)
     error('feature_extractor:missingFolder', 'Cannot find %s', realDir);
@@ -59,6 +62,7 @@ end
 
 fprintf('Found %d images (%d real, %d AI).\n', ...
         totalImages, numel(realFiles), numel(aiFiles));
+fprintf('Preprocessing mode: %s\n', PREPROCESS);
 fprintf('Extracting %d features per image...\n\n', NUM_FEATURES);
 
 %% ------------------------------------------------------------ main loop
@@ -84,7 +88,7 @@ for k = 1:totalImages
         end
 
         img = toUint8Rgb(img);              % force 3-channel uint8 RGB
-        img = imresize(img, IMG_SIZE);      % no re-encode, no grayscale
+        img = standardiseSize(img, IMG_SIZE, PREPROCESS);   % no re-encode
 
         R = img(:,:,1);
         G = img(:,:,2);
@@ -234,6 +238,47 @@ function img = toUint8Rgb(img)
     end
 end
 
+
+function img = standardiseSize(img, targetSize, mode)
+%STANDARDISESIZE Bring an image to targetSize by cropping or by scaling.
+%   'crop'   takes a centre crop, so pixels keep their native scale and
+%            nothing is resampled. Use this whenever the two classes have
+%            different native resolutions: scaling them by different factors
+%            low-pass filters them by different amounts and manufactures a
+%            high-frequency difference that has nothing to do with whether
+%            an image was generated. Cropping also leaves the JPEG
+%            compression history intact, which resizing partly destroys.
+%   'resize' scales the whole frame. Keeps the full composition, but
+%            resamples every pixel.
+
+    [h, w, ~] = size(img);
+
+    switch lower(mode)
+        case 'resize'
+            img = imresize(img, targetSize);
+
+        case 'crop'
+            % Scale up only when the image is too small to crop from.
+            if h < targetSize(1) || w < targetSize(2)
+                scale = max(targetSize(1)/h, targetSize(2)/w);
+                img   = imresize(img, ceil([h w] * scale));
+                [h, w, ~] = size(img);
+            end
+
+            % Snap the origin to a multiple of 8 so the crop stays aligned
+            % with the JPEG DCT block grid.
+            r0 = floor((h - targetSize(1)) / 2);
+            c0 = floor((w - targetSize(2)) / 2);
+            r0 = r0 - mod(r0, 8) + 1;
+            c0 = c0 - mod(c0, 8) + 1;
+
+            img = img(r0:r0+targetSize(1)-1, c0:c0+targetSize(2)-1, :);
+
+        otherwise
+            error('feature_extractor:badMode', ...
+                  'PREPROCESS must be ''crop'' or ''resize'', got ''%s''', mode);
+    end
+end
 
 function stats = computeBaseStats(data)
 %COMPUTEBASESTATS Seven first/second-order statistics of any 2D matrix.
