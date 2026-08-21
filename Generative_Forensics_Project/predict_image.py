@@ -60,14 +60,34 @@ def main():
     print(f"  Separation : {strength}")
     print("=" * 62)
 
-    m_real, m_ai, d = bundle["mean_real"], bundle["mean_ai"], bundle["cohens_d"]
+    # Which features actually drove THIS image's score, not just which ones
+    # separate the two classes best on average. Candidates are the ~60 globally
+    # most discriminative features (bundle["candidate_features"]); within that
+    # pool, rank by how many pooled standard deviations this image's value sits
+    # toward AI versus toward real. A feature can be a top-12 global
+    # discriminator and still say nothing about one particular image - this
+    # picks the ones that do.
+    m_real, m_ai = bundle["mean_real"], bundle["mean_ai"]
+    pooled = bundle.get("pooled_std")
+    if pooled is None:               # older model.joblib without this field
+        pooled = np.maximum(np.abs(m_real - m_ai), 1e-12) / np.maximum(bundle["cohens_d"], 1e-6)
+    pooled = np.maximum(pooled, 1e-12)
+
+    candidates = bundle.get("candidate_features", bundle["top_features"])
+    dist_real = np.abs(vec - m_real) / pooled
+    dist_ai   = np.abs(vec - m_ai) / pooled
+    decisiveness = dist_real[candidates] - dist_ai[candidates]   # + leans AI, - leans real
+    order = candidates[np.argsort(np.abs(decisiveness))[::-1]][:8]
+
     print(f"\n  {'measurement':<34}{'this':>11}{'real':>11}{'AI':>11}{'leans':>8}")
     print("  " + "-" * 73)
-    for c in bundle["top_features"][:8]:
+    for c in order:
         c = int(c)
         v, r, a = vec[c], m_real[c], m_ai[c]
         leans = "real" if abs(v - r) < abs(v - a) else "AI"
         print(f"  {describe_feature(c):<34}{v:>11.4g}{r:>11.4g}{a:>11.4g}{leans:>8}")
+    print("  (the 8 features that actually pushed this image's verdict, out of "
+          f"{len(candidates)} candidates)")
 
     print(f"\n  Model: held-out AUC {bundle['roc_auc']:.3f}, "
           f"accuracy {bundle['accuracy']:.1%}"

@@ -82,10 +82,13 @@ def main():
     # measure, against which one image can be compared.
     A, B = X[y == 0], X[y == 1]
     mean_real, mean_ai = A.mean(axis=0), B.mean(axis=0)
+    std_real, std_ai = A.std(axis=0), B.std(axis=0)
     pooled = np.sqrt((A.var(axis=0) + B.var(axis=0)) / 2)
     d = np.abs(mean_real - mean_ai) / np.maximum(pooled, 1e-12)
     d[~np.isfinite(d)] = 0.0
     top = np.argsort(d)[::-1][:12]
+    # A wider candidate pool the demo picks from per image - see predict_image.py.
+    candidates = np.argsort(d)[::-1][:60]
 
     print("\nMost discriminative features (the demo uses these to explain itself):")
     for c in top[:6]:
@@ -98,9 +101,13 @@ def main():
         "roc_auc": float(auc),
         "accuracy": float(acc_tuned),
         "top_features": top.astype(int),
+        "candidate_features": candidates.astype(int),
         "cohens_d": d,
+        "pooled_std": pooled,
         "mean_real": mean_real,
         "mean_ai": mean_ai,
+        "std_real": std_real,
+        "std_ai": std_ai,
         "generators": sorted(set(generators)),
     }, OUT_PATH)
 
