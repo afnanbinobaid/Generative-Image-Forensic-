@@ -21,9 +21,9 @@ import pandas as pd
 import joblib
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.metrics import accuracy_score, roc_auc_score, roc_curve
-from sklearn.model_selection import train_test_split
 
 from feature_names import describe_feature
+from split_utils import make_split, describe_split
 
 CSV_PATH    = Path("dataset_crop.csv")
 NAMES_PATH  = Path("filenames_crop.txt")
@@ -54,10 +54,17 @@ def main():
                     if len(parts) >= 2:
                         generators.append(parts[1].lower())
 
-    X_tr, X_te, y_tr, y_te = train_test_split(
-        X, y, test_size=0.20, stratify=y, random_state=RANDOM_SEED)
+    names = None
+    if NAMES_PATH.exists():
+        candidate = NAMES_PATH.read_text().splitlines()
+        if len(candidate) == len(y):
+            names = candidate
 
-    print("Training ...")
+    tr_idx, te_idx, grouped = make_split(y, names, seed=RANDOM_SEED)
+    print(describe_split(y, tr_idx, te_idx, grouped))
+    X_tr, X_te, y_tr, y_te = X[tr_idx], X[te_idx], y[tr_idx], y[te_idx]
+
+    print("\nTraining ...")
     model = HistGradientBoostingClassifier(random_state=RANDOM_SEED)
     model.fit(X_tr, y_tr)
 
@@ -109,6 +116,7 @@ def main():
         "std_real": std_real,
         "std_ai": std_ai,
         "generators": sorted(set(generators)),
+        "grouped_split": bool(grouped),
     }, OUT_PATH)
 
     print(f"\nSaved {OUT_PATH.resolve()}")

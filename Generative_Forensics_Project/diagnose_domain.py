@@ -29,8 +29,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from sklearn.metrics import accuracy_score
-from sklearn.model_selection import train_test_split
 
+from split_utils import make_split
 from feature_names import describe_feature, block_of, BLOCKS
 
 CSV_PATH    = Path("dataset_crop.csv")
@@ -79,9 +79,17 @@ def baseline():
     bundle = load_model()
     X, y = load_training()
 
-    # Same call as train_model.py, so this reproduces that exact split.
-    X_tr, X_te, y_tr, y_te = train_test_split(
-        X, y, test_size=0.20, stratify=y, random_state=RANDOM_SEED)
+    # Same split helper as train_model.py, so this reproduces that exact split
+    # - including the grouping that keeps augmented copies of one photograph on
+    # a single side.
+    names = None
+    names_path = Path("filenames_crop.txt")
+    if names_path.exists():
+        candidate = names_path.read_text().splitlines()
+        if len(candidate) == len(y):
+            names = candidate
+    _, te_idx, grouped = make_split(y, names, seed=RANDOM_SEED)
+    X_te, y_te = X[te_idx], y[te_idx]
 
     prob = bundle["model"].predict_proba(X_te)[:, 1]
     threshold = float(bundle["threshold"])
@@ -95,6 +103,9 @@ def baseline():
     print("=" * 62)
     print(f"held-out images     : {len(y_te)}  "
           f"({is_real.sum()} real / {is_ai.sum()} AI)")
+    if grouped:
+        print("split               : grouped by source photograph "
+              "(augmented copies kept together)")
     print(f"threshold           : {threshold:.4f}")
     print(f"overall accuracy    : {accuracy_score(y_te, pred):.1%}")
     print(f"accuracy on REAL    : {accuracy_score(y_te[is_real], pred[is_real]):.1%}"
@@ -179,8 +190,14 @@ def chart_scores(sets, model, threshold, X, y):
     OUT_DIR.mkdir(exist_ok=True)
     path = OUT_DIR / "domain_scores.png"
 
-    _, X_te, _, y_te = train_test_split(
-        X, y, test_size=0.20, stratify=y, random_state=RANDOM_SEED)
+    names_path = Path("filenames_crop.txt")
+    names = None
+    if names_path.exists():
+        candidate = names_path.read_text().splitlines()
+        if len(candidate) == len(y):
+            names = candidate
+    _, te_idx, _ = make_split(y, names, seed=RANDOM_SEED)
+    X_te, y_te = X[te_idx], y[te_idx]
     base = model.predict_proba(X_te)[:, 1]
 
     n = len(sets) + 1
