@@ -8,6 +8,9 @@ Three diagnostics, matching the plan:
                         dataset_crop.csv and reports accuracy on the real images
                         in it. No re-extraction needed.
 
+  --flips   A.csv B.csv D3: how often each edit flips a real photo to "AI",
+                        as one table. Include control.csv as the reference.
+
   --compare A.csv B.csv D4: which measurements shift, and in which direction,
                         for each feature CSV produced by extract_folder.m
                         D5: where the scores land, as a chart
@@ -230,6 +233,63 @@ def chart_scores(sets, model, threshold, X, y):
     print(f"D5  score distributions written to {path.resolve()}")
 
 
+def flips(paths):
+    """D3 summary: how often each edit flips a real photograph to 'AI'.
+
+    Every variant holds the same photographs differing by one edit, so the
+    control row is the reference: it should sit near 0%. Any variant far above
+    it is being flipped by its edit and nothing else.
+    """
+    bundle = load_model()
+    model = bundle["model"]
+    threshold = float(bundle["threshold"])
+
+    rows = []
+    for p in paths:
+        p = Path(p)
+        if not p.exists():
+            print(f"  skipping {p} (not found)", file=sys.stderr)
+            continue
+        X = load_features(p)
+        prob = model.predict_proba(X)[:, 1]
+        rows.append((p.stem, len(X), float((prob >= threshold).mean()),
+                     float(prob.mean()), float(np.median(prob))))
+
+    if not rows:
+        sys.exit("No usable feature CSVs given.")
+
+    control = next((r for r in rows if r[0] == "control"), None)
+
+    print("=" * 66)
+    print("D3  WHICH EDIT FLIPS REAL PHOTOGRAPHS TO 'AI'")
+    print("=" * 66)
+    print(f"threshold {threshold:.4f}   (every image below is a real photograph)\n")
+    print(f"{'variant':<12}{'images':>8}{'flagged AI':>13}{'mean':>9}{'median':>9}"
+          f"{'vs control':>13}")
+    print("-" * 66)
+
+    for name, n, flagged, mean_s, med_s in sorted(rows, key=lambda r: r[2]):
+        delta = ""
+        if control is not None and name != "control":
+            delta = f"{(flagged - control[2]) * 100:+.0f} pts"
+        print(f"{name:<12}{n:>8}{flagged:>12.1%}{mean_s:>9.3f}{med_s:>9.3f}"
+              f"{delta:>13}")
+
+    print()
+    if control is None:
+        print("No control.csv given - add it, or the numbers have no reference point.")
+    elif control[2] > 0.10:
+        print(f"WARNING: control is at {control[2]:.1%}, not ~0%. Control holds")
+        print("unedited pixels, so it should barely flip at all. Something is wrong")
+        print("with the sample - do not trust the other rows until this is resolved.")
+    else:
+        worst = max((r for r in rows if r[0] != "control"), key=lambda r: r[2],
+                    default=None)
+        if worst is not None:
+            print(f"Control sits at {control[2]:.1%} as expected, so the comparison holds.")
+            print(f"Largest single effect: '{worst[0]}' at {worst[2]:.1%} flagged AI.")
+
+
 def main():
     args = sys.argv[1:]
     if not args:
@@ -237,6 +297,10 @@ def main():
 
     if args[0] == "--baseline":
         baseline()
+    elif args[0] == "--flips":
+        if len(args) < 2:
+            sys.exit("usage: python diagnose_domain.py --flips control.csv [more.csv ...]")
+        flips(args[1:])
     elif args[0] == "--compare":
         if len(args) < 2:
             sys.exit("usage: python diagnose_domain.py --compare a.csv [b.csv ...]")
