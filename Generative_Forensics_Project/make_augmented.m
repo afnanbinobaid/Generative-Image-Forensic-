@@ -1,22 +1,36 @@
-function make_augmented(doResizeVariant)
+function make_augmented(nVariants, doResizeVariant)
 %MAKE_AUGMENTED  Add compressed copies of every training image, to BOTH classes.
 %
-%   make_augmented          adds three variants per image
-%   make_augmented(false)   adds only the two JPEG variants (faster)
+%   make_augmented                 all 3 recipes/image (qhi+qlo+rweb) -> 4x the dataset
+%   make_augmented(1)              1 random recipe/image              -> 2x the dataset
+%   make_augmented(2)              2 random recipes/image             -> 3x the dataset
+%   make_augmented(3, false)       qhi+qlo only, rweb excluded from the pool
+%
+%   NVARIANTS controls how many of the three augmentation recipes - qhi
+%   (light JPEG, quality 70-95), qlo (heavy JPEG, quality 40-70), and rweb
+%   (resize 60-90% then JPEG 70-95) - are applied to each image. Recipes are
+%   chosen at random PER IMAGE, without replacement, rather than the same
+%   fixed subset for every image, so the full compression range still shows
+%   up across the dataset even when NVARIANTS is small.
+%
+%   Default is 3 (every recipe, every image): the original behaviour, taking
+%   a 10,000-image dataset to 40,000. Before committing to that ~2-hour
+%   extraction, it is worth checking whether it earns its cost: NVARIANTS=1
+%   still gives every image at least one compressed sibling, which is what
+%   actually breaks the compression-level-as-identity shortcut (section 8) -
+%   fewer copies just means less redundancy per individual photo, not a
+%   different mechanism. Test both on a small stratified subsample first
+%   (make_augmented on a copy of Dataset with ~500-1000 images, extract,
+%   train, score web_reals.csv) rather than assuming either answer.
+%
+%   NOTE: this used to be make_augmented(doResizeVariant). The first
+%   argument is now NVARIANTS - call make_augmented(3, false) for the old
+%   make_augmented(false) behaviour.
 %
 %   The controlled experiment showed JPEG re-compression alone flips 81% of real
 %   photographs to "AI": compression removes fine detail, and the detector reads
 %   missing fine detail as generation. The fix is to show it compressed images
 %   during training so compression stops being informative.
-%
-%   The variants added per image, each at a RANDOM quality rather than a fixed
-%   one - every training image already exists at exactly one compression state,
-%   which is why the model treats compression level as identity. Drawing at
-%   random spreads the dataset across the whole quality scale instead of piling
-%   it on two points:
-%       _qhi      re-saved as JPEG, quality drawn from 70-95
-%       _qlo      re-saved as JPEG, quality drawn from 40-70
-%       _rweb     shrunk 60-90% then saved as JPEG 70-95 (a web pipeline)
 %
 %   Re-saving an already-JPEG image double-compresses it. That is deliberate:
 %   web photographs are almost always compressed more than once - saved by the
@@ -29,7 +43,8 @@ function make_augmented(doResizeVariant)
 %
 %   Files are written alongside the originals, so feature_extractor.m needs no
 %   changes. Running this twice is safe: already-augmented files are skipped
-%   rather than compounded.
+%   rather than compounded, and the fixed seed reproduces the same per-image
+%   recipe choices, so an interrupted run resumes cleanly.
 %
 %   To undo, delete every file matching *_qhi.*, *_qlo.* and *_rweb.*
 %   (If an earlier run left *_q85.*, *_q60.* or *_r75q85.* files, delete those
@@ -39,7 +54,10 @@ function make_augmented(doResizeVariant)
 %   extraction overwrites them, and the numbers already in your report came
 %   from the current ones.
 
-    if nargin < 1 || isempty(doResizeVariant)
+    if nargin < 1 || isempty(nVariants)
+        nVariants = 3;
+    end
+    if nargin < 2 || isempty(doResizeVariant)
         doResizeVariant = true;
     end
 
@@ -49,6 +67,12 @@ function make_augmented(doResizeVariant)
     MIN_AFTER = 256;         % below this the extractor upscales, a different effect
 
     rng(42);                 % reproducible draws
+
+    recipePool = {'qhi', 'qlo'};
+    if doResizeVariant
+        recipePool{end+1} = 'rweb';
+    end
+    nVariants = min(nVariants, numel(recipePool));
 
     folders = {fullfile(pwd, 'Dataset', 'Real_Images'), ...
                fullfile(pwd, 'Dataset', 'AI_Images')};
@@ -60,7 +84,9 @@ function make_augmented(doResizeVariant)
         end
     end
 
-    fprintf('Augmenting BOTH classes so compression carries no label information.\n\n');
+    fprintf('Augmenting BOTH classes so compression carries no label information.\n');
+    fprintf('%d of %d recipes per image, chosen at random.\n\n', ...
+            nVariants, numel(recipePool));
 
     totals = zeros(numel(folders), 1);
 
@@ -99,26 +125,35 @@ function make_augmented(doResizeVariant)
 
                 [~, base] = fileparts(names{i});
 
+                % Which recipes this particular image gets, drawn without
+                % replacement so a partial NVARIANTS still spreads across the
+                % whole pool over the dataset instead of always dropping the
+                % same recipe.
+                chosen = recipePool(randperm(numel(recipePool), nVariants));
+
                 % Skip outputs that already exist, so re-running after an
                 % interruption resumes instead of redoing hours of work.
-                outHi = fullfile(folder, [base '_qhi.jpg']);
-                outLo = fullfile(folder, [base '_qlo.jpg']);
-
-                if isfile(outHi)
-                    nExisted = nExisted + 1;
-                else
-                    imwrite(img, outHi, 'Quality', randQuality(Q_HI));
-                    nMade = nMade + 1;
+                if ismember('qhi', chosen)
+                    outHi = fullfile(folder, [base '_qhi.jpg']);
+                    if isfile(outHi)
+                        nExisted = nExisted + 1;
+                    else
+                        imwrite(img, outHi, 'Quality', randQuality(Q_HI));
+                        nMade = nMade + 1;
+                    end
                 end
 
-                if isfile(outLo)
-                    nExisted = nExisted + 1;
-                else
-                    imwrite(img, outLo, 'Quality', randQuality(Q_LO));
-                    nMade = nMade + 1;
+                if ismember('qlo', chosen)
+                    outLo = fullfile(folder, [base '_qlo.jpg']);
+                    if isfile(outLo)
+                        nExisted = nExisted + 1;
+                    else
+                        imwrite(img, outLo, 'Quality', randQuality(Q_LO));
+                        nMade = nMade + 1;
+                    end
                 end
 
-                if doResizeVariant
+                if ismember('rweb', chosen)
                     outR = fullfile(folder, [base '_rweb.jpg']);
                     if isfile(outR)
                         nExisted = nExisted + 1;
