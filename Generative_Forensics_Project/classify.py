@@ -32,9 +32,10 @@ from sklearn.ensemble import RandomForestClassifier, HistGradientBoostingClassif
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (accuracy_score, precision_score, recall_score,
                              f1_score, roc_auc_score, roc_curve, confusion_matrix)
-from sklearn.model_selection import train_test_split
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
+
+from split_utils import make_split, describe_split, group_key
 
 # --------------------------------------------------------------- configuration
 CSV_PATH    = Path("dataset_crop.csv")
@@ -116,12 +117,14 @@ def load_data():
     # Generator identity comes from the filename, and only for AI rows - a real
     # filename like ILSVRC2012_val_00001277 would otherwise parse to 'val'.
     generator = np.array(["real"] * len(y), dtype=object)
+    names = None
     if NAMES_PATH.exists():
-        names = NAMES_PATH.read_text().splitlines()
-        if len(names) != len(y):
-            print(f"WARNING: {NAMES_PATH} has {len(names)} lines but the CSV has "
+        candidate = NAMES_PATH.read_text().splitlines()
+        if len(candidate) != len(y):
+            print(f"WARNING: {NAMES_PATH} has {len(candidate)} lines but the CSV has "
                   f"{len(y)} rows. Skipping Experiment B.")
         else:
+            names = candidate
             for i in np.flatnonzero(y == 1):
                 stem = Path(names[i].replace("\\", "/")).stem
                 parts = stem.split("_")
@@ -129,7 +132,7 @@ def load_data():
     else:
         print(f"WARNING: {NAMES_PATH} not found. Skipping Experiment B.")
 
-    return X, y, generator
+    return X, y, generator, names
 
 
 # ------------------------------------------------------------------- the models
@@ -179,15 +182,19 @@ def print_table(rows, title):
 
 
 # ----------------------------------------------------------------- experiment A
-def experiment_a(X, y):
+def experiment_a(X, y, names=None):
     print("\n" + "=" * 66)
-    print("EXPERIMENT A - stratified random split")
+    print("EXPERIMENT A - held-out split")
     print("=" * 66)
 
-    X_tr, X_te, y_tr, y_te = train_test_split(
-        X, y, test_size=TEST_FRAC, stratify=y, random_state=RANDOM_SEED)
-    print(f"train {len(y_tr)} rows ({np.sum(y_tr==0)} real / {np.sum(y_tr==1)} AI)")
-    print(f"test  {len(y_te)} rows ({np.sum(y_te==0)} real / {np.sum(y_te==1)} AI)")
+    # Same split helper as train_model.py. On an augmented dataset this groups
+    # by source photograph, so an image's compressed copies cannot sit on both
+    # sides - without it the reported accuracy is inflated by memorisation.
+    tr_idx, te_idx, grouped = make_split(y, names, seed=RANDOM_SEED,
+                                         test_frac=TEST_FRAC)
+    print(describe_split(y, tr_idx, te_idx, grouped))
+    X_tr, X_te = X[tr_idx], X[te_idx]
+    y_tr, y_te = y[tr_idx], y[te_idx]
 
     results = {}
     for name, model in build_models().items():
@@ -199,12 +206,27 @@ def experiment_a(X, y):
 
 
 # ----------------------------------------------------------------- experiment B
-def _split_idx(idx, frac, rng):
-    """Split an index array into a small calibration slice and a larger rest."""
+def _split_idx(idx, frac, rng, groups=None):
+    """Split an index array into a `frac` slice and the larger rest.
+
+    With GROUPS, whole source photographs are assigned to one side, so an
+    image's augmented copies cannot straddle the split. Without them it falls
+    back to a plain row-wise shuffle.
+    """
     idx = np.array(idx, copy=True)
-    rng.shuffle(idx)
-    n_cal = max(1, int(round(len(idx) * frac)))
-    return idx[:n_cal], idx[n_cal:]
+
+    if groups is None:
+        rng.shuffle(idx)
+        n_cal = max(1, int(round(len(idx) * frac)))
+        return idx[:n_cal], idx[n_cal:]
+
+    g = groups[idx]
+    uniq = np.unique(g)
+    rng.shuffle(uniq)
+    n_g = max(1, int(round(len(uniq) * frac)))
+    chosen = set(uniq[:n_g].tolist())
+    mask = np.array([v in chosen for v in g])
+    return idx[mask], idx[~mask]
 
 
 def best_threshold(y_true, prob):
@@ -213,7 +235,7 @@ def best_threshold(y_true, prob):
     return float(thr[np.argmax(tpr - fpr)])
 
 
-def experiment_b(X, y, generator):
+def experiment_b(X, y, generator, names=None):
     """Leave-one-generator-out, with and without threshold recalibration.
 
     The model is never trained on the held-out generator. A small labelled
@@ -233,10 +255,22 @@ def experiment_b(X, y, generator):
     print(f"generators found: {', '.join(gens)}")
 
     rng = np.random.default_rng(RANDOM_SEED)
+
+    # Group rows by source photograph so an image's augmented copies stay on one
+    # side of every split below. Without this the real photographs are halved
+    # row-wise, putting a photo in training and its compressed copy in the
+    # evaluation set - which is exactly the memorisation this experiment is
+    # designed to rule out.
+    groups = None
+    if names is not None and len(names) == len(y):
+        candidate = np.array([group_key(n) for n in names])
+        if len(np.unique(candidate)) < len(candidate):
+            groups = candidate
+            print("real photographs split by source photograph "
+                  "(augmented copies kept together)")
+
     real_idx = np.flatnonzero(y == 0)
-    rng.shuffle(real_idx)
-    half = len(real_idx) // 2
-    real_tr, real_held = real_idx[:half], real_idx[half:]
+    real_held, real_tr = _split_idx(real_idx, 0.5, rng, groups)
 
     rows = []
     for held_out in gens:
@@ -244,8 +278,8 @@ def experiment_b(X, y, generator):
         tr_ai   = np.flatnonzero((y == 1) & np.isin(generator, train_gen))
         held_ai = np.flatnonzero((y == 1) & (generator == held_out))
 
-        cal_real, ev_real = _split_idx(real_held, CAL_FRAC, rng)
-        cal_ai,   ev_ai   = _split_idx(held_ai,   CAL_FRAC, rng)
+        cal_real, ev_real = _split_idx(real_held, CAL_FRAC, rng, groups)
+        cal_ai,   ev_ai   = _split_idx(held_ai,   CAL_FRAC, rng, groups)
 
         tr  = np.concatenate([real_tr,  tr_ai])
         cal = np.concatenate([cal_real, cal_ai])
@@ -442,7 +476,7 @@ def chart_importance(rf, path, top_n=20):
 
 # ------------------------------------------------------------------------ main
 def main():
-    X, y, generator = load_data()
+    X, y, generator, names = load_data()
     print(f"Loaded {X.shape[0]} images x {X.shape[1]} features")
     print(f"  real : {np.sum(y == 0)}")
     print(f"  AI   : {np.sum(y == 1)}")
@@ -456,8 +490,8 @@ def main():
 
     OUT_DIR.mkdir(exist_ok=True)
 
-    results, y_te = experiment_a(X, y)
-    b_rows = experiment_b(X, y, generator)
+    results, y_te = experiment_a(X, y, names)
+    b_rows = experiment_b(X, y, generator, names)
 
     best = max(results, key=lambda k: results[k]["roc_auc"])
     print(f"\nBest by ROC-AUC: {best}")
