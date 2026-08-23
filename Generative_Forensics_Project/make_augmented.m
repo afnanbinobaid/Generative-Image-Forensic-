@@ -9,10 +9,18 @@ function make_augmented(doResizeVariant)
 %   missing fine detail as generation. The fix is to show it compressed images
 %   during training so compression stops being informative.
 %
-%   The variants added per image:
-%       _q85      re-saved as JPEG quality 85
-%       _q60      re-saved as JPEG quality 60
-%       _r75q85   shrunk to 75% then saved as JPEG 85 (a realistic web pipeline)
+%   The variants added per image, each at a RANDOM quality rather than a fixed
+%   one - every training image already exists at exactly one compression state,
+%   which is why the model treats compression level as identity. Drawing at
+%   random spreads the dataset across the whole quality scale instead of piling
+%   it on two points:
+%       _qhi      re-saved as JPEG, quality drawn from 70-95
+%       _qlo      re-saved as JPEG, quality drawn from 40-70
+%       _rweb     shrunk 60-90% then saved as JPEG 70-95 (a web pipeline)
+%
+%   Re-saving an already-JPEG image double-compresses it. That is deliberate:
+%   web photographs are almost always compressed more than once - saved by the
+%   photographer, re-encoded on upload, often again per display size.
 %
 %   CRITICAL: these are added to Real_Images AND AI_Images alike. Augmenting only
 %   the real images would teach the model that "compressed means real", which is
@@ -23,7 +31,9 @@ function make_augmented(doResizeVariant)
 %   changes. Running this twice is safe: already-augmented files are skipped
 %   rather than compounded.
 %
-%   To undo, delete every file matching *_q85.*, *_q60.* and *_r75q85.*
+%   To undo, delete every file matching *_qhi.*, *_qlo.* and *_rweb.*
+%   (If an earlier run left *_q85.*, *_q60.* or *_r75q85.* files, delete those
+%   too - they are recognised and not re-augmented, but they are redundant.)
 %
 %   BEFORE RUNNING: back up dataset_crop.csv and filenames_crop.txt. The next
 %   extraction overwrites them, and the numbers already in your report came
@@ -33,8 +43,12 @@ function make_augmented(doResizeVariant)
         doResizeVariant = true;
     end
 
-    RESIZE_FACTOR = 0.75;
-    MIN_AFTER     = 256;    % below this the extractor upscales, a different effect
+    Q_HI    = [70 95];      % light compression band
+    Q_LO    = [40 70];       % heavy compression band
+    R_RANGE = [0.60 0.90];   % web resize band
+    MIN_AFTER = 256;         % below this the extractor upscales, a different effect
+
+    rng(42);                 % reproducible draws
 
     folders = {fullfile(pwd, 'Dataset', 'Real_Images'), ...
                fullfile(pwd, 'Dataset', 'AI_Images')};
@@ -63,7 +77,7 @@ function make_augmented(doResizeVariant)
 
         isImage = ~cellfun(@isempty, regexpi(names, '\.(jpe?g|png)$', 'once'));
         % Never augment an augmented file - that would stack compression.
-        isMade  = ~cellfun(@isempty, regexpi(names, '_(q85|q60|r75q85)\.', 'once'));
+        isMade  = ~cellfun(@isempty, regexpi(names, '_(qhi|qlo|rweb|q85|q60|r75q85)\.', 'once'));
         names   = sort(names(isImage & ~isMade));
 
         fprintf('%s: %d original images\n', labels{f}, numel(names));
@@ -87,31 +101,32 @@ function make_augmented(doResizeVariant)
 
                 % Skip outputs that already exist, so re-running after an
                 % interruption resumes instead of redoing hours of work.
-                out85 = fullfile(folder, [base '_q85.jpg']);
-                out60 = fullfile(folder, [base '_q60.jpg']);
+                outHi = fullfile(folder, [base '_qhi.jpg']);
+                outLo = fullfile(folder, [base '_qlo.jpg']);
 
-                if isfile(out85)
+                if isfile(outHi)
                     nExisted = nExisted + 1;
                 else
-                    imwrite(img, out85, 'Quality', 85);
+                    imwrite(img, outHi, 'Quality', randQuality(Q_HI));
                     nMade = nMade + 1;
                 end
 
-                if isfile(out60)
+                if isfile(outLo)
                     nExisted = nExisted + 1;
                 else
-                    imwrite(img, out60, 'Quality', 60);
+                    imwrite(img, outLo, 'Quality', randQuality(Q_LO));
                     nMade = nMade + 1;
                 end
 
                 if doResizeVariant
-                    outR = fullfile(folder, [base '_r75q85.jpg']);
+                    outR = fullfile(folder, [base '_rweb.jpg']);
                     if isfile(outR)
                         nExisted = nExisted + 1;
                     else
-                        small = imresize(img, RESIZE_FACTOR);
+                        factor = R_RANGE(1) + rand * (R_RANGE(2) - R_RANGE(1));
+                        small  = imresize(img, factor);
                         if min(size(small, 1), size(small, 2)) >= MIN_AFTER
-                            imwrite(small, outR, 'Quality', 85);
+                            imwrite(small, outR, 'Quality', randQuality(Q_HI));
                             nMade = nMade + 1;
                         else
                             nNoResize = nNoResize + 1;
@@ -164,4 +179,11 @@ function make_augmented(doResizeVariant)
     fprintf('  2. feature_extractor          (re-measures everything - this is slow)\n');
     fprintf('  3. python train_model.py\n');
     fprintf('  4. re-run the diagnostics to confirm the fix worked\n');
+
+end
+
+
+function q = randQuality(band)
+%RANDQUALITY  An integer JPEG quality drawn uniformly from [band(1), band(2)].
+    q = round(band(1) + rand * (band(2) - band(1)));
 end
