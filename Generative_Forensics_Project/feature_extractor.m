@@ -36,6 +36,15 @@ PREPROCESS    = 'crop';      % 'crop'   = cut a 256x256 window from the centre
 NUM_FEATURES  = 230;         % feature count, excluding the label
 PROGRESS_STEP = 100;         % print a progress line every N images
 
+AUG_SAMPLE_FRAC = 0.5;       % fraction of AUGMENTED siblings to extract.
+                             % Every original image is always kept in full;
+                             % this only thins the _qhi/_qlo/_rweb (or legacy
+                             % _q85/_q60/_r75q85) copies make_augmented.m adds.
+                             % 0.5 roughly halves extraction time on an
+                             % already-augmented dataset without dropping any
+                             % original photograph. 1.0 = extract everything.
+AUG_SAMPLE_SEED = 42;        % reproducible sampling
+
 projectRoot = pwd;
 realDir     = fullfile(projectRoot, 'Dataset', 'Real_Images');
 aiDir       = fullfile(projectRoot, 'Dataset', 'AI_Images');
@@ -52,6 +61,14 @@ end
 %% ------------------------------------------------------------- file list
 realFiles = listImages(realDir);
 aiFiles   = listImages(aiDir);
+
+if AUG_SAMPLE_FRAC < 1
+    [realFiles, nRealDropped] = sampleAugmented(realFiles, AUG_SAMPLE_FRAC, AUG_SAMPLE_SEED);
+    [aiFiles,   nAiDropped]   = sampleAugmented(aiFiles,   AUG_SAMPLE_FRAC, AUG_SAMPLE_SEED);
+    fprintf('AUG_SAMPLE_FRAC %.2f: dropped %d augmented Real siblings, %d augmented AI siblings\n', ...
+            AUG_SAMPLE_FRAC, nRealDropped, nAiDropped);
+    fprintf('(every original image is kept; only _qhi/_qlo/_rweb copies were thinned)\n\n');
+end
 
 % Concatenate both classes up front so progress reporting reflects the
 % combined total rather than restarting per folder.
@@ -165,4 +182,31 @@ function files = listImages(folderPath)
     files = fullfile(folderPath, names);
     files = sort(files);          % deterministic row order across runs
     files = files(:);
+end
+
+
+function [files, nDropped] = sampleAugmented(files, frac, seed)
+%SAMPLEAUGMENTED Keep every original image; keep a random FRAC of the
+%   augmented siblings make_augmented.m added (files whose name ends in
+%   _qhi, _qlo, _rweb, or the legacy _q85/_q60/_r75q85).
+%
+%   Sampling is seeded, so re-running with the same FRAC picks the same
+%   subset - the extracted CSV stays reproducible.
+
+    [~, stems] = cellfun(@fileparts, files, 'UniformOutput', false);
+    isAug = ~cellfun(@isempty, ...
+        regexpi(stems, '_(qhi|qlo|rweb|q85|q60|r75q85)$', 'once'));
+
+    originals = files(~isAug);
+    augmented = files(isAug);
+
+    rng(seed);
+    nKeep = round(numel(augmented) * frac);
+    nDropped = numel(augmented) - nKeep;
+    if nDropped > 0
+        keepIdx   = sort(randperm(numel(augmented), nKeep));
+        augmented = augmented(keepIdx);
+    end
+
+    files = sort([originals; augmented]);
 end
