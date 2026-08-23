@@ -15,5 +15,7 @@ Generative_Forensics_Project/*_features.csv
 Generative_Forensics_Project/scores_*.csv
 Generative_Forensics_Project/score_*.csv
 Generative_Forensics_Project/results/
+Generative_Forensics_Project/variants/
+Generative_Forensics_Project/*.filenames.txt
 __pycache__/
 *.pyc
