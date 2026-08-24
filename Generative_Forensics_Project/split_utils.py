@@ -56,6 +56,49 @@ def make_split(y, names=None, seed=42, test_frac=TEST_FRAC):
     return train_idx, test_idx, False
 
 
+def make_split_3way(y, names=None, seed=42, test_frac=TEST_FRAC,
+                    calib_frac=0.15):
+    """Return (train_idx, calib_idx, test_idx, grouped) for labels y.
+
+    Probability calibration needs a slice the base model never saw. Fitting the
+    calibrator on training data would learn to correct over-confidence the model
+    does not exhibit there - it is over-confident precisely on data it has not
+    seen - so the mapping would be fitted to the wrong distribution and the
+    resulting probabilities would still be wrong, just differently.
+
+    CALIB_FRAC is taken out of the training portion, not the test portion, so
+    the test set stays exactly the one make_split() would have produced and the
+    accuracy figures remain comparable across runs.
+
+    Every one of the three slices is grouped by source photograph when the
+    dataset is augmented. This matters for the calibration slice as much as for
+    test: a calibrator fitted on compressed copies of photographs the model
+    trained on would see falsely-confident-and-correct predictions and conclude
+    no correction was needed.
+    """
+    y = np.asarray(y)
+    train_all, test_idx, grouped = make_split(y, names, seed=seed,
+                                              test_frac=test_frac)
+
+    # Split the training portion again, into fit and calibration parts. The
+    # sub-split needs the same grouping guarantee, so it is done on the labels
+    # and names restricted to the training rows.
+    sub_names = None
+    if grouped and names is not None:
+        sub_names = [names[i] for i in train_all]
+
+    # calib_frac is expressed against the whole dataset; convert it to a
+    # fraction of the training portion so the resulting slice is the size asked
+    # for rather than a fraction of a fraction.
+    sub_frac = min(0.5, max(1e-6, calib_frac / max(len(train_all) / len(y), 1e-9)))
+
+    fit_local, calib_local, _ = make_split(y[train_all], sub_names, seed=seed + 1,
+                                           test_frac=sub_frac)
+    train_idx = train_all[fit_local]
+    calib_idx = train_all[calib_local]
+    return train_idx, calib_idx, test_idx, grouped
+
+
 def describe_split(y, train_idx, test_idx, grouped):
     """A short line saying what the split did, for the caller to print."""
     y = np.asarray(y)
