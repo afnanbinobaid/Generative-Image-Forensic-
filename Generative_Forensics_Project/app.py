@@ -339,38 +339,59 @@ st.set_page_config(page_title="Generative Image Forensics",
 
 STYLE = """
 <style>
-/* Tokens are unconditional, not behind a prefers-color-scheme query: .streamlit/
-   config.toml pins the app to a light theme, so the page's actual background
-   never turns dark. A dark-mode override keyed to the OS/browser preference
-   would then fire on its own - painting light text meant for a dark surface
-   onto the white one Streamlit is still rendering, which reads as invisible
-   text. One committed palette, always applied, keeps the two in sync. */
+/* ------------------------------------------------------------------ palette
+   An instrument panel, not a document: a cool slate canvas with white cards
+   lifted off it, deep navy ink, and one restrained blue carrying the
+   "measured by a machine" register. Verdict colours stay the only saturated
+   things on the page, so the eye lands on them first.
+
+   Tokens are unconditional, not behind a prefers-color-scheme query:
+   .streamlit/config.toml pins the app to a light theme, so the page's actual
+   background never turns dark. A dark-mode override keyed to the OS/browser
+   preference would then fire on its own - painting light text meant for a
+   dark surface onto the white one Streamlit is still rendering, which reads
+   as invisible text. One committed palette, always applied, keeps the two in
+   sync. */
 :root {
-  --ink:      #14161a;
-  --ink-soft: #5b6270;
-  --ink-faint:#8b929e;
-  --line:     #e7e9ed;
-  --line-soft:#f1f2f5;
-  --surface:  #ffffff;
-  --ai:       #a4571b;
-  --ai-wash:  #fdf6ef;
-  --real:     #1a6b5f;
-  --real-wash:#f0f7f5;
-  --warn:     #8a6212;
-  --warn-wash:#fdf8ec;
-  --warn-line:#ecdcb4;
+  --canvas:     #e9edf4;
+  --surface:    #ffffff;
+  --surface-2:  #f6f8fc;
+  --ink:        #0e1826;
+  --ink-soft:   #45526a;
+  --ink-faint:  #7b89a0;
+  --line:       #dbe2ed;
+  --line-soft:  #eaeff6;
+  --accent:     #1b4b7d;
+  --accent-2:   #2f7cb8;
+  --accent-soft:#e8f0f8;
+  --ai:         #9a4712;
+  --ai-wash:    #fcf4ed;
+  --real:       #0d6353;
+  --real-wash:  #e9f4f1;
+  --warn:       #7a5410;
+  --warn-wash:  #fdf8ea;
+  --warn-line:  #e6d5a8;
+  --shadow:     0 1px 2px rgba(14,24,38,.05), 0 10px 28px -14px rgba(14,24,38,.18);
+  --shadow-sm:  0 1px 2px rgba(14,24,38,.05), 0 4px 12px -8px rgba(14,24,38,.16);
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", "Segoe UI Mono",
+          "Roboto Mono", Menlo, Consolas, monospace;
 }
 
-/* Belt-and-suspenders on top of .streamlit/config.toml's backgroundColor: the
-   page background is stated here too, so the light palette above is never
-   applied over a background it doesn't actually match. */
-[data-testid="stAppViewContainer"], [data-testid="stMain"], .stApp { background:var(--surface) !important; }
+/* The canvas is stated here as well as in config.toml, so the palette above is
+   never applied over a background that does not match it. */
+[data-testid="stAppViewContainer"], [data-testid="stMain"], .stApp { background:var(--canvas) !important; }
+
+/* a hairline of instrument colour across the top - the one piece of chrome */
+[data-testid="stAppViewContainer"]::before {
+  content:""; position:fixed; top:0; left:0; right:0; height:3px; z-index:999;
+  background:linear-gradient(90deg, var(--accent) 0%, var(--accent-2) 55%, var(--real) 100%);
+}
 
 /* a quiet frame: no toolbar, no chrome, generous air */
 #MainMenu, header[data-testid="stHeader"], footer,
 [data-testid="stToolbar"], [data-testid="stDecoration"] { display:none !important; }
 
-.block-container { max-width: 46rem; padding-top: 4.5rem; padding-bottom: 6rem; }
+.block-container { max-width: 47rem; padding-top: 4.2rem; padding-bottom: 6rem; }
 
 html, body, [class*="css"] { -webkit-font-smoothing: antialiased; }
 .gf, .gf * {
@@ -380,27 +401,47 @@ html, body, [class*="css"] { -webkit-font-smoothing: antialiased; }
 }
 .gf-num { font-variant-numeric: tabular-nums; }
 
+/* Measurements are set in mono - the register that says a machine produced
+   this number, and the one that keeps digits in vertical columns. Prose is
+   never mono, so the two never blur together. */
+.gf-cell-v, .gf-bar-val, .gf-table td:not(.gf-name) { font-family:var(--mono); }
+
+/* ---------- card ---------- */
+.gf-card {
+  background:var(--surface); border:1px solid var(--line);
+  border-radius:14px; box-shadow:var(--shadow);
+  padding:1.85rem 1.7rem; margin:0;
+}
+
 /* ---------- masthead ---------- */
 .gf-eyebrow {
-  font-size:.66rem; letter-spacing:.22em; text-transform:uppercase;
-  color:var(--ink-faint); font-weight:600; margin-bottom:1.1rem;
+  font-size:.66rem; letter-spacing:.2em; text-transform:uppercase;
+  color:var(--accent); font-weight:700; margin-bottom:1.05rem;
+}
+.gf-eyebrow::before {
+  content:""; display:inline-block; width:6px; height:6px; border-radius:1px;
+  background:var(--accent); margin-right:.62rem; transform:translateY(-1px) rotate(45deg);
 }
 .gf h1.gf-title {
-  font-size:2.3rem; line-height:1.12; letter-spacing:-.028em;
-  font-weight:600; color:var(--ink); margin:0 0 .85rem 0;
+  font-size:2.35rem; line-height:1.12; letter-spacing:-.03em;
+  font-weight:650; color:var(--ink); margin:0 0 .85rem 0;
 }
 .gf p.gf-lede { font-size:1rem; line-height:1.65; color:var(--ink-soft); margin:0; max-width:34rem; }
-.gf-rule { height:1px; background:var(--line); border:0; margin:2.6rem 0; }
+.gf-rule { height:1px; background:var(--line); border:0; margin:2.5rem 0; }
 
 /* ---------- processing ---------- */
-.gf-stage { display:flex; align-items:center; gap:.8rem; padding:1.9rem .25rem; }
+.gf-stage {
+  display:flex; align-items:center; gap:.8rem; padding:1.35rem 1.5rem;
+  background:var(--surface); border:1px solid var(--line);
+  border-radius:12px; box-shadow:var(--shadow-sm); margin-top:1.4rem;
+}
 .gf-dot {
-  width:7px; height:7px; border-radius:50%; background:var(--ink);
+  width:7px; height:7px; border-radius:50%; background:var(--accent-2);
   animation: gfPulse 1.35s ease-in-out infinite; flex:none;
 }
-@keyframes gfPulse { 0%,100%{opacity:.18; transform:scale(.8);} 50%{opacity:1; transform:scale(1);} }
+@keyframes gfPulse { 0%,100%{opacity:.2; transform:scale(.8);} 50%{opacity:1; transform:scale(1);} }
 .gf-stage-text {
-  font-size:.94rem; color:var(--ink-soft); letter-spacing:.005em;
+  font-size:.92rem; color:var(--ink-soft); letter-spacing:.005em;
   animation: gfFade .45s ease both;
 }
 @keyframes gfFade { from{opacity:0; transform:translateX(-4px);} to{opacity:1; transform:none;} }
@@ -411,31 +452,34 @@ html, body, [class*="css"] { -webkit-font-smoothing: antialiased; }
 .gf-d1{animation-delay:.00s}.gf-d2{animation-delay:.09s}
 .gf-d3{animation-delay:.18s}.gf-d4{animation-delay:.27s}
 
-.gf-verdict { border-left:2px solid var(--edge); padding:.15rem 0 .3rem 1.5rem; margin:.5rem 0 0 0; }
+/* the verdict card wears its own colour as a left edge */
+.gf-verdict { border-left:3px solid var(--edge); }
 .gf-verdict-label {
   font-size:.66rem; letter-spacing:.2em; text-transform:uppercase;
-  color:var(--ink-faint); font-weight:600;
+  color:var(--ink-faint); font-weight:700;
 }
 .gf-verdict-word {
-  font-size:2.5rem; line-height:1.1; letter-spacing:-.035em; font-weight:600;
-  color:var(--edge); margin:.55rem 0 .9rem 0;
+  font-size:2.5rem; line-height:1.1; letter-spacing:-.035em; font-weight:650;
+  color:var(--edge); margin:.5rem 0 .9rem 0;
 }
 .gf p.gf-reading { font-size:1.02rem; line-height:1.6; color:var(--ink); margin:0 0 .55rem 0; max-width:32rem; }
-.gf p.gf-reading b { font-weight:600; }
+.gf p.gf-reading b { font-weight:650; }
 .gf p.gf-subline { font-size:.83rem; color:var(--ink-faint); margin:0; }
 
 .gf-chips { display:flex; flex-wrap:wrap; gap:.45rem; margin-top:1.35rem; }
 .gf-chip {
   font-size:.73rem; letter-spacing:.02em; color:var(--ink-soft);
-  border:1px solid var(--line); border-radius:999px; padding:.3rem .72rem;
-  background:var(--surface);
+  border:1px solid var(--line); border-radius:999px; padding:.32rem .75rem;
+  background:var(--surface-2);
 }
-.gf-chip b { color:var(--ink); font-weight:600; }
+.gf-chip b { color:var(--accent); font-weight:700; }
 
 /* ---------- warning ---------- */
 .gf-warn {
   background:var(--warn-wash); border:1px solid var(--warn-line);
-  border-radius:10px; padding:1.05rem 1.25rem; margin:2rem 0 0 0;
+  border-left:3px solid var(--warn);
+  border-radius:12px; padding:1.1rem 1.3rem; margin:1rem 0 0 0;
+  box-shadow:var(--shadow-sm);
 }
 .gf-warn-title {
   font-size:.7rem; letter-spacing:.16em; text-transform:uppercase;
@@ -446,24 +490,30 @@ html, body, [class*="css"] { -webkit-font-smoothing: antialiased; }
 /* ---------- section headings ---------- */
 .gf-h2 {
   font-size:.68rem; letter-spacing:.2em; text-transform:uppercase;
-  color:var(--ink-faint); font-weight:600; margin:0 0 .5rem 0;
+  color:var(--accent); font-weight:700; margin:0 0 .5rem 0;
 }
-.gf p.gf-h2-sub { font-size:.9rem; line-height:1.6; color:var(--ink-soft); margin:0 0 1.5rem 0; max-width:33rem; }
+.gf p.gf-h2-sub { font-size:.9rem; line-height:1.6; color:var(--ink-soft); margin:0 0 1.4rem 0; max-width:33rem; }
 
 /* ---------- additivity ledger ---------- */
-/* Every cell carries the same top rule - transparent except on the total - so
-   the four labels sit on one line instead of stepping down at the sum. */
-.gf-ledger { display:flex; align-items:flex-start; gap:.55rem; flex-wrap:wrap; margin-bottom:2rem; }
-.gf-cell { flex:1 1 0; min-width:6.6rem; border-top:2px solid transparent; padding-top:.55rem; }
+/* Every cell carries the same top rule - tinted except on the total, which
+   takes the ink - so the four labels sit on one line instead of stepping
+   down at the sum. */
+.gf-ledger {
+  display:flex; align-items:flex-start; gap:.55rem; flex-wrap:wrap;
+  margin:0 0 1.75rem 0; padding:1.15rem 1.2rem 1rem;
+  background:var(--surface-2); border:1px solid var(--line-soft); border-radius:12px;
+}
+.gf-cell { flex:1 1 0; min-width:6.6rem; border-top:2px solid var(--line); padding-top:.55rem; }
 .gf-cell-k {
   font-size:.68rem; color:var(--ink-faint); letter-spacing:.04em;
   margin-bottom:.45rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
 }
-.gf-cell-v { font-size:1.28rem; font-weight:600; letter-spacing:-.02em; color:var(--ink); font-variant-numeric:tabular-nums; }
+.gf-cell-v { font-size:1.2rem; font-weight:600; letter-spacing:-.02em; color:var(--ink); font-variant-numeric:tabular-nums; }
 .gf-cell-v.pos { color:var(--ai); }
 .gf-cell-v.neg { color:var(--real); }
 .gf-op { flex:none; padding-top:2.05rem; font-size:.95rem; color:var(--ink-faint); }
-.gf-total { border-top-color:var(--ink); }
+.gf-total { border-top-color:var(--accent); }
+.gf-total .gf-cell-k { color:var(--accent); font-weight:600; }
 
 /* ---------- driver table ---------- */
 /* Streamlit styles bare <table> elements with its own grid rules; this panel is
@@ -473,49 +523,70 @@ html, body, [class*="css"] { -webkit-font-smoothing: antialiased; }
 .gf-table { width:100%; border-collapse:collapse; font-size:.82rem; border:0 !important; }
 .gf-table th, .gf-table td { border:0 !important; background:transparent !important; }
 .gf-table th {
-  text-align:right; font-weight:500; font-size:.67rem; letter-spacing:.055em;
-  text-transform:uppercase; color:var(--ink-faint);
+  text-align:right; font-weight:600; font-size:.66rem; letter-spacing:.075em;
+  text-transform:uppercase; color:var(--accent);
   padding:0 0 .6rem 0; border-bottom:1px solid var(--line) !important;
 }
 .gf-table th:first-child, .gf-table td:first-child { text-align:left; }
 .gf-table td {
   padding:.72rem 0; border-bottom:1px solid var(--line-soft) !important;
   color:var(--ink); font-variant-numeric:tabular-nums; text-align:right;
-  white-space:nowrap;
+  white-space:nowrap; font-size:.79rem;
 }
-.gf-table td.gf-name { white-space:normal; color:var(--ink); padding-right:1rem; line-height:1.4; }
+.gf-table tr:last-child td { border-bottom:0 !important; }
+.gf-table td.gf-name {
+  white-space:normal; color:var(--ink); padding-right:1rem; line-height:1.4;
+  font-family:inherit; font-size:.82rem;
+}
 .gf-table th:not(:first-child):not(.gf-c), .gf-table td:not(:first-child):not(.gf-c)
   { padding-left:1.15rem; }
 .gf-table td.gf-ref { color:var(--ink-faint); }
-.gf-table td.gf-this { font-weight:600; }
+.gf-table td.gf-this { font-weight:600; color:var(--ink); }
 .gf-table th.gf-c, .gf-table td.gf-c { padding-left:1.1rem; width:8.5rem; }
 .gf-bar { display:flex; align-items:center; justify-content:flex-end; gap:.5rem; }
-.gf-bar-track { flex:1; height:4px; background:var(--line-soft); border-radius:2px; overflow:hidden; }
-.gf-bar-fill { height:100%; border-radius:2px; display:block; }
-.gf-bar-val { font-size:.8rem; font-weight:600; width:3.9rem; text-align:right; }
+.gf-bar-track { flex:1; height:5px; background:var(--line-soft); border-radius:3px; overflow:hidden; }
+.gf-bar-fill { height:100%; border-radius:3px; display:block; }
+.gf-bar-val { font-size:.79rem; font-weight:600; width:3.9rem; text-align:right; }
 .gf p.gf-foot { font-size:.76rem; line-height:1.6; color:var(--ink-faint); margin:1.1rem 0 0 0; }
 
 /* ---------- dsp panel ---------- */
+/* st.container(border=True) wraps the figure; it is restyled to match .gf-card
+   so the MATLAB output sits in the same frame as everything else. */
+[data-testid="stVerticalBlockBorderWrapper"]:has([data-testid="stImageContainer"]) {
+  background:var(--surface); border:1px solid var(--line) !important;
+  border-radius:14px !important; box-shadow:var(--shadow); padding:.85rem !important;
+}
+[data-testid="stImageContainer"] img { border-radius:8px; }
 .gf p.gf-caption {
   font-size:.76rem; color:var(--ink-faint); letter-spacing:.02em;
-  margin:.85rem 0 0 0; text-align:center;
+  margin:.9rem 0 0 0; text-align:center;
 }
 .gf p.gf-caption span { color:var(--ink-soft); }
-[data-testid="stImageContainer"] img { border-radius:6px; }
 
 /* ---------- provenance ---------- */
 .gf-prov {
   font-size:.74rem; color:var(--ink-faint); line-height:1.8;
-  border-top:1px solid var(--line); padding-top:1.2rem; margin-top:3.5rem;
+  border-top:1px solid var(--line); padding-top:1.2rem; margin-top:3.2rem;
 }
-.gf-prov b { color:var(--ink-soft); font-weight:600; }
+.gf-prov b { color:var(--accent); font-weight:600; }
 
 /* ---------- uploader ---------- */
 [data-testid="stFileUploaderDropzone"] {
-  background:var(--surface); border:1px dashed var(--line);
-  border-radius:10px; padding:1.6rem; transition:border-color .2s ease;
+  background:var(--surface); border:1px dashed #c3cfe0;
+  border-radius:14px; padding:1.7rem; box-shadow:var(--shadow-sm);
+  transition:border-color .2s ease, box-shadow .2s ease;
 }
-[data-testid="stFileUploaderDropzone"]:hover { border-color:var(--ink-faint); }
+[data-testid="stFileUploaderDropzone"]:hover {
+  border-color:var(--accent-2); box-shadow:var(--shadow);
+}
+[data-testid="stFileUploaderDropzone"] button {
+  background:var(--accent) !important; color:#fff !important;
+  border:1px solid var(--accent) !important; border-radius:8px !important;
+  font-weight:600 !important;
+}
+[data-testid="stFileUploaderDropzone"] button:hover {
+  background:var(--accent-2) !important; border-color:var(--accent-2) !important;
+}
 </style>
 """
 
@@ -713,7 +784,7 @@ reading = (f'Of images scoring near <b>{res["prob"]:.2f}</b>, about '
 
 block(
     f'<div class="gf-reveal gf-d1" style="--edge:{edge};">'
-    f'  <div class="gf-verdict">'
+    f'  <div class="gf-card gf-verdict">'
     f'    <div class="gf-verdict-label">Verdict</div>'
     f'    <div class="gf-verdict-word">{esc(res["verdict"])}</div>'
     f'    <p class="gf-reading gf-num">{reading}</p>'
@@ -811,7 +882,7 @@ else:
     calnote = (f", then calibrated to {res['prob']:.4f}" if res["calibrated"] else "")
 
     block(
-        '<div class="gf-reveal gf-d3">'
+        '<div class="gf-reveal gf-d3 gf-card">'
         + ledger +
         '<div class="gf-tablewrap"><table class="gf-table">'
         '<thead><tr>'

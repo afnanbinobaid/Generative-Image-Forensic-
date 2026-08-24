@@ -5,11 +5,14 @@
 # usage-stats call on a machine that may be offline during a demo.
 
 [theme]
+# Kept in step with the :root tokens in app.py. Streamlit paints these before
+# the page's own stylesheet arrives, so a mismatch here shows as a flash of the
+# wrong background on load.
 base = "light"
-primaryColor = "#14161a"
-backgroundColor = "#ffffff"
-secondaryBackgroundColor = "#f7f8fa"
-textColor = "#14161a"
+primaryColor = "#1b4b7d"
+backgroundColor = "#e9edf4"
+secondaryBackgroundColor = "#f6f8fc"
+textColor = "#0e1826"
 
 [client]
 toolbarMode = "minimal"
