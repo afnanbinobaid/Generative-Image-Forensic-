@@ -94,13 +94,26 @@ def main():
     d = np.abs(mean_real - mean_ai) / np.maximum(pooled, 1e-12)
     d[~np.isfinite(d)] = 0.0
     top = np.argsort(d)[::-1][:12]
-    # A wider candidate pool the demo picks from per image - see predict_image.py.
+    # Kept for models built before the SHAP explainer below - see predict_image.py.
     candidates = np.argsort(d)[::-1][:60]
 
-    print("\nMost discriminative features (the demo uses these to explain itself):")
+    print("\nMost discriminative features (globally, not per-image):")
     for c in top[:6]:
         print(f"  col {c + 1:3d}  d={d[c]:.2f}  real={mean_real[c]:<11.4g} "
               f"AI={mean_ai[c]:<11.4g} {describe_feature(int(c))}")
+
+    # A background sample for the demo's per-image SHAP explanation. Distance
+    # to the class mean over a fixed feature pool (the old approach) is only a
+    # heuristic proxy for what actually drove one image's score - post-fix the
+    # model is measurably non-linear (see classify.py's LR-vs-HGB gap), so that
+    # heuristic and the real decision now diverge often enough to mislead. SHAP
+    # values are exact per-feature contributions to this specific prediction,
+    # computed against the training distribution, and sum to the model's actual
+    # output - so what predict_image.py shows can never contradict the verdict.
+    bg_rng = np.random.default_rng(RANDOM_SEED)
+    bg_size = min(200, len(X_tr))
+    bg_idx = bg_rng.choice(len(X_tr), size=bg_size, replace=False)
+    background = X_tr[bg_idx]
 
     joblib.dump({
         "model": model,
@@ -115,6 +128,7 @@ def main():
         "mean_ai": mean_ai,
         "std_real": std_real,
         "std_ai": std_ai,
+        "background": background,
         "generators": sorted(set(generators)),
         "grouped_split": bool(grouped),
     }, OUT_PATH)
