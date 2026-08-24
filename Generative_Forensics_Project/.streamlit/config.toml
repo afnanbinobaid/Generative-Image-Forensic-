@@ -1,0 +1,24 @@
+# Theme for the live demonstration GUI (app.py).
+#
+# The page paints its own palette in CSS, so this file only has to stop
+# Streamlit from fighting it: a fixed light base, no rerun toast, no
+# usage-stats call on a machine that may be offline during a demo.
+
+[theme]
+base = "light"
+primaryColor = "#14161a"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f7f8fa"
+textColor = "#14161a"
+
+[client]
+toolbarMode = "minimal"
+showErrorDetails = true
+
+[browser]
+gatherUsageStats = false
+
+[server]
+# A 256x256 crop is all that gets measured, but the upload itself is the
+# user's original file - 40 MB covers a full-frame camera JPEG comfortably.
+maxUploadSize = 40

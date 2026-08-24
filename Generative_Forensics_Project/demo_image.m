@@ -1,8 +1,15 @@
-function demo_image(imgPath)
+function demo_image(imgPath, outDir)
 %DEMO_IMAGE  Live demonstration of the detector on a single image.
 %
-%   demo_image             opens a file picker
-%   demo_image('cat.jpg')  analyses that file directly
+%   demo_image                     opens a file picker
+%   demo_image('cat.jpg')          analyses that file directly
+%   demo_image('cat.jpg', OUTDIR)  headless export mode for the GUI
+%
+%   Export mode writes OUTDIR/temp_features.csv and OUTDIR/dsp_visuals.png and
+%   returns immediately - no window, no Python call. That is the handoff app.py
+%   (the Streamlit GUI) uses: MATLAB measures and draws, the GUI owns the model,
+%   the score and the SHAP explanation, exactly as the interactive path splits
+%   the work between MATLAB and predict_image.py.
 %
 %   Splits the work the way the project does: MATLAB measures the image, Python
 %   decides what it is. The 230 DSP features come from extractImageFeatures() -
@@ -17,6 +24,13 @@ function demo_image(imgPath)
 
     FEATURES_CSV = 'demo_features.csv';
     PY_SCRIPT    = 'predict_image.py';
+
+    % Export mode is checked first: it needs neither the Python script nor a
+    % trained model, because the caller already owns both.
+    if nargin >= 2 && ~isempty(outDir)
+        exportForGui(imgPath, char(outDir));
+        return;
+    end
 
     if ~isfile(PY_SCRIPT)
         error('demo_image:noScript', 'Cannot find %s', fullfile(pwd, PY_SCRIPT));
@@ -194,4 +208,116 @@ function txt = stripMachineLines(output)
                     startsWith(line, 'VERDICT '));
     end
     txt = strjoin(lines(keep), sprintf('\n'));
+end
+
+
+function exportForGui(imgPath, outDir)
+%EXPORTFORGUI  Headless measurement and figure export for the Streamlit GUI.
+%
+%   Writes exactly two artefacts into OUTDIR and prints one machine-readable
+%   line for each, so the caller never has to infer from a filesystem race
+%   whether a stage actually succeeded:
+%
+%       DIMS <width> <height>
+%       CSV <path>            the 230 features, one row, no header
+%       VISUALS <path>        the four-panel PNG, or the word  none
+%       DONE
+%
+%   The CSV is written before the figure is drawn, and the drawing is guarded.
+%   A machine with no display, no OpenGL or an unfamiliar MATLAB then costs the
+%   user a picture rather than a verdict - the GUI simply omits the visual panel.
+
+    if nargin < 1 || isempty(imgPath)
+        error('demo_image:noImage', 'Export mode needs an image path.');
+    end
+    imgPath = char(imgPath);
+    if ~isfile(imgPath)
+        error('demo_image:missingImage', 'Cannot find %s', imgPath);
+    end
+    if ~isfolder(outDir)
+        mkdir(outDir);
+    end
+
+    original = imread(imgPath);
+    [h, w, ~] = size(original);
+
+    % Same function the training set was built with, so the numbers the GUI
+    % scores can never drift from the numbers the model learned.
+    [features, crop, grayD] = extractImageFeatures(imgPath, 'crop');
+
+    csvPath = fullfile(outDir, 'temp_features.csv');
+    writematrix(features, csvPath);
+
+    fprintf('DIMS %d %d\n', w, h);
+    fprintf('CSV %s\n', csvPath);
+
+    pngPath = fullfile(outDir, 'dsp_visuals.png');
+    try
+        exportPanels(crop, grayD, pngPath);
+        fprintf('VISUALS %s\n', pngPath);
+    catch figErr
+        fprintf('VISUALS none\n');
+        fprintf(2, 'figure export failed: %s\n', figErr.message);
+    end
+
+    fprintf('DONE\n');
+end
+
+
+function exportPanels(crop, grayD, pngPath)
+%EXPORTPANELS  The four-panel PNG: what the detector actually looked at.
+%
+%   Crop, spectrum, finest wavelet detail and noise residual - the same
+%   intermediates the interactive figure shows, minus the score gauge, which
+%   the GUI draws itself from the calibrated probability.
+
+    spectrum = log1p(abs(fftshift(fft2(grayD))));
+
+    [C, Sz] = wavedec2(grayD, 2, 'db4');
+    [~, ~, cD1] = detcoef2('all', C, Sz, 1);
+
+    residual = grayD - imgaussfilt(grayD, 1);
+
+    fig = figure('Visible', 'off', 'Color', 'w', ...
+                 'InvertHardcopy', 'off', 'Position', [0 0 1600 430]);
+    closeFig = onCleanup(@() close(fig));   % also fires if an axis call throws
+
+    ax = gobjects(1, 4);
+
+    ax(1) = subplot(1, 4, 1);
+    imshow(crop, 'Parent', ax(1));
+
+    ax(2) = subplot(1, 4, 2);
+    imagesc(ax(2), spectrum);
+    colormap(ax(2), hot(256));
+
+    ax(3) = subplot(1, 4, 3);
+    imagesc(ax(3), abs(cD1));
+    colormap(ax(3), hot(256));
+
+    lim = max(abs(residual(:)));
+    if lim == 0
+        lim = 1;               % a perfectly flat residual would give an empty range
+    end
+    ax(4) = subplot(1, 4, 4);
+    imagesc(ax(4), residual, [-lim lim]);
+    colormap(ax(4), gray(256));
+
+    titles = {'Analysed crop  256x256', ...
+              'Fourier spectrum  (log)', ...
+              'Wavelet cD1  (finest detail)', ...
+              'High-pass noise residual'};
+
+    for k = 1:4
+        axis(ax(k), 'image');
+        axis(ax(k), 'off');
+        title(ax(k), titles{k}, 'FontSize', 12, 'FontWeight', 'normal', ...
+              'Color', [0.16 0.17 0.19]);
+    end
+
+    if exist('exportgraphics', 'file')          % R2020a and later
+        exportgraphics(fig, pngPath, 'Resolution', 150, 'BackgroundColor', 'white');
+    else
+        print(fig, pngPath, '-dpng', '-r150');
+    end
 end

@@ -1,0 +1,16 @@
+# Python side of the project. MATLAB owns feature extraction; everything here
+# trains, scores and explains the model, or serves the live demonstration GUI.
+#
+#     pip install -r requirements.txt
+#
+# Lower bounds only - these are the versions the code was developed against,
+# and nothing here pins a ceiling, so a newer scikit-learn is fine (train_model.py
+# already handles the 1.5 -> 1.6 calibration API change either way).
+
+numpy>=1.24
+pandas>=2.0
+scikit-learn>=1.3
+joblib>=1.3
+shap>=0.44          # per-image SHAP explanation of a verdict
+streamlit>=1.32     # app.py, the live demonstration GUI
+pillow>=10.0        # app.py reads the upload's dimensions before MATLAB sees it
