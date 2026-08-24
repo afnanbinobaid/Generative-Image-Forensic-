@@ -81,6 +81,11 @@ def main():
 
     bundle = joblib.load(MODEL_PATH)
     model, threshold = bundle["model"], float(bundle["threshold"])
+    # SHAP needs the bare tree ensemble; the calibrated wrapper hides the trees.
+    # Calibration only remaps the score monotonically, so explaining the base
+    # model still explains the calibrated verdict correctly.
+    explain_model = bundle.get("base_model", model)
+    calibrated = bool(bundle.get("calibrated", False))
 
     prob = float(model.predict_proba(vec.reshape(1, -1))[0, 1])
     is_ai = prob >= threshold
@@ -100,6 +105,11 @@ def main():
     print(f"  Verdict    : {verdict}")
     print(f"  Score      : {prob:.4f}   (threshold {threshold:.4f})")
     print(f"  Separation : {strength}")
+    if calibrated:
+        # A calibrated score is a probability, so it can be stated in words
+        # rather than left as a bare number the viewer has to interpret.
+        print(f"  Reading    : of images scoring near {prob:.2f}, about "
+              f"{prob:.0%} are AI-generated")
     print("=" * 62)
 
     # Which features actually drove THIS image's score. SHAP values are exact
@@ -113,7 +123,8 @@ def main():
 
     if background is not None:
         try:
-            contributions, base_value, space = shap_contributions(model, vec, background)
+            contributions, base_value, space = shap_contributions(
+                explain_model, vec, background)
         except Exception as exc:
             print(f"  (SHAP explanation unavailable: {exc}; "
                   f"falling back to the distance heuristic)\n")
@@ -134,11 +145,18 @@ def main():
         # not only the 8 shown, plus the base rate should reproduce the score.
         # Contributions are additive in the model's own scoring space, which
         # for the fast tree path is log-odds rather than probability - convert
-        # through a sigmoid before comparing to predict_proba.
+        # through a sigmoid before comparing.
+        #
+        # The comparison is against the UNCALIBRATED score, because that is
+        # what these contributions explain. Calibration then remaps that number
+        # monotonically to the reported probability; it reorders nothing, so the
+        # feature ranking above is unaffected by it.
         total = base_value + contributions.sum()
         reconstructed = 1 / (1 + np.exp(-total)) if space == "logit" else total
+        raw_prob = float(explain_model.predict_proba(vec.reshape(1, -1))[0, 1])
         print(f"  (top 8 of 230 by |{unit} contribution|; all 230 reconstruct "
-              f"a score of {reconstructed:.4f} vs actual {prob:.4f})")
+              f"{reconstructed:.4f} vs the model's own {raw_prob:.4f}"
+              + (f", calibrated to {prob:.4f})" if calibrated else ")"))
     else:
         # Older model.joblib without a saved background sample: fall back to
         # the pre-SHAP heuristic, honestly labelled as an approximation rather
