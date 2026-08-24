@@ -14,3 +14,16 @@ joblib>=1.3
 shap>=0.44          # per-image SHAP explanation of a verdict
 streamlit>=1.32     # app.py, the live demonstration GUI
 pillow>=10.0        # app.py reads the upload's dimensions before MATLAB sees it
+
+# Optional. Without it, app.py launches a fresh `matlab -batch` process per
+# upload - correct, but pays MATLAB's full startup (commonly 15-45s) every
+# time. With it, app.py keeps one MATLAB session alive for the server's
+# lifetime, so only the very first upload pays that cost.
+#
+# Not on PyPI under this name for every MATLAB release - if this line fails to
+# install, skip it and instead run, from a command prompt:
+#     matlabroot\extern\engines\python> python -m pip install .
+# where matlabroot is the folder `matlabroot` returns inside MATLAB, e.g.
+# C:\Program Files\MATLAB\R2024b. app.py works either way; this only affects
+# how fast repeated uploads are.
+# matlabengine

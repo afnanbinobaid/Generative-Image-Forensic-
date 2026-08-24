@@ -18,10 +18,19 @@ extractImageFeatures() the training set was built with, and the explanation
 comes from predict_image.shap_contributions(), so the browser can never show a
 number the command-line demo would disagree with.
 
+By default every upload launches a fresh `matlab -batch` process, which pays
+MATLAB's full startup - commonly 15-45s - each time. When the MATLAB Engine
+API for Python is installed (ships inside a MATLAB install at
+matlabroot/extern/engines/python, or `pip install matlabengine` on R2022b+),
+the app starts one MATLAB session on first use and reuses it for every upload
+after, so only that first image is slow. Nothing needs enabling - it is tried
+automatically and falls back to the subprocess path if unavailable.
+
 Environment (all optional):
-    MATLAB_EXE           path to the MATLAB binary, if it is not on PATH
-    MATLAB_ARGS          extra flags for the MATLAB launch (e.g. -softwareopengl)
-    GIF_MATLAB_TIMEOUT   seconds to wait for MATLAB    (default 300)
+    MATLAB_EXE              path to the MATLAB binary, if it is not on PATH
+    MATLAB_ARGS              extra flags for the MATLAB launch (e.g. -softwareopengl)
+    GIF_MATLAB_TIMEOUT       seconds to wait for a subprocess MATLAB run  (default 300)
+    GIF_NO_MATLAB_ENGINE     set to skip the persistent-session fast path entirely
 """
 
 import glob
@@ -34,6 +43,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from pathlib import Path
 
@@ -108,30 +118,18 @@ def _matlab_quote(path):
     return str(path).replace("'", "''")
 
 
-def run_matlab(matlab, image_path, work_dir):
-    """Run the extractor headlessly; return (features, png_bytes, log)."""
-    call = f"{MATLAB_ENTRY}('{_matlab_quote(image_path)}','{_matlab_quote(work_dir)}')"
-    extra = shlex.split(os.environ.get("MATLAB_ARGS", ""))
-    cmd = [matlab, *extra, "-batch", call]
+def _collect_outputs(work_dir, log):
+    """Read the two artefacts exportForGui() was asked to write, or explain why not.
 
-    try:
-        proc = subprocess.run(cmd, cwd=str(HERE), capture_output=True,
-                              text=True, timeout=MATLAB_TIMEOUT)
-    except subprocess.TimeoutExpired:
-        raise PipelineError(
-            f"MATLAB did not finish within {MATLAB_TIMEOUT} seconds.",
-            hint="Raise GIF_MATLAB_TIMEOUT if the first run is just slow to "
-                 "start - MATLAB's own launch can take a while on a cold machine.")
-    except OSError as exc:
-        raise PipelineError("MATLAB could not be launched.", detail=str(exc))
-
-    log = "\n".join(part for part in (proc.stdout, proc.stderr) if part and part.strip())
-
+    Shared by both run paths below, so a subprocess run and an Engine-API run
+    are validated identically and can never disagree about what "succeeded"
+    means.
+    """
     csv_path = Path(work_dir) / FEATURES_CSV
     if not csv_path.exists():
-        # A non-zero exit is the usual cause, but a missing toolbox licence can
-        # exit cleanly and still write nothing - test for the artefact, not the
-        # status code.
+        # A non-zero exit (or, on the Engine path, a clean return) is the usual
+        # cause, but a missing toolbox licence can exit cleanly and still write
+        # nothing - test for the artefact, not the status code.
         raise PipelineError(
             "MATLAB ran but returned no feature vector.",
             detail=log or "(MATLAB produced no output at all.)",
@@ -152,7 +150,87 @@ def run_matlab(matlab, image_path, work_dir):
 
     png_path = Path(work_dir) / VISUALS_PNG
     png_bytes = png_path.read_bytes() if png_path.exists() else None
+    return features, png_bytes
 
+
+def run_matlab_subprocess(matlab, image_path, work_dir):
+    """Run the extractor as a fresh `matlab -batch` process.
+
+    Needs nothing beyond a MATLAB install, but pays MATLAB's full startup -
+    commonly 15-45s - on every single call, because it is a new process each
+    time. Used when the Engine API session in get_matlab_engine() is
+    unavailable; otherwise run_matlab_engine() below is the fast path.
+    """
+    call = f"{MATLAB_ENTRY}('{_matlab_quote(image_path)}','{_matlab_quote(work_dir)}')"
+    extra = shlex.split(os.environ.get("MATLAB_ARGS", ""))
+    cmd = [matlab, *extra, "-batch", call]
+
+    try:
+        proc = subprocess.run(cmd, cwd=str(HERE), capture_output=True,
+                              text=True, timeout=MATLAB_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise PipelineError(
+            f"MATLAB did not finish within {MATLAB_TIMEOUT} seconds.",
+            hint="Raise GIF_MATLAB_TIMEOUT if the first run is just slow to "
+                 "start - MATLAB's own launch can take a while on a cold machine.")
+    except OSError as exc:
+        raise PipelineError("MATLAB could not be launched.", detail=str(exc))
+
+    log = "\n".join(part for part in (proc.stdout, proc.stderr) if part and part.strip())
+    features, png_bytes = _collect_outputs(work_dir, log)
+    return features, png_bytes, log
+
+
+_ENGINE_LOCK = threading.Lock()   # one MATLAB session, so concurrent uploads queue rather than collide
+
+
+@st.cache_resource(show_spinner=False)
+def get_matlab_engine():
+    """A MATLAB session kept alive for the life of the server process.
+
+    Starting it is exactly as slow as one `matlab -batch` call, but it is done
+    once - here, cached - rather than on every upload. Returns None, never
+    raises, when the Engine API isn't installed or the session fails to
+    start; callers then fall back to run_matlab_subprocess(), so a machine
+    without the Engine API behaves exactly as it did before this existed.
+    """
+    if os.environ.get("GIF_NO_MATLAB_ENGINE"):
+        return None
+    try:
+        import matlab.engine
+    except ImportError:
+        return None
+    try:
+        eng = matlab.engine.start_matlab()
+        eng.cd(str(HERE), nargout=0)
+        return eng
+    except Exception:
+        return None
+
+
+def run_matlab_engine(engine, image_path, work_dir):
+    """Run the extractor in the persistent session from get_matlab_engine().
+
+    Same two artefacts, same validation as the subprocess path - just without
+    paying MATLAB's startup cost again.
+    """
+    import matlab.engine
+
+    out, err = io.StringIO(), io.StringIO()
+    try:
+        with _ENGINE_LOCK:
+            engine.demo_image(str(image_path), str(work_dir), nargout=0,
+                              stdout=out, stderr=err)
+    except matlab.engine.MatlabExecutionError as exc:
+        log = (out.getvalue() + err.getvalue()).strip() or str(exc)
+        raise PipelineError(
+            "MATLAB raised an error while measuring the image.",
+            detail=log,
+            hint="Most often a missing toolbox: the extractor needs Image "
+                 "Processing, Wavelet, and Statistics & Machine Learning.")
+
+    log = (out.getvalue() + err.getvalue()).strip()
+    features, png_bytes = _collect_outputs(work_dir, log)
     return features, png_bytes, log
 
 
@@ -261,6 +339,12 @@ st.set_page_config(page_title="Generative Image Forensics",
 
 STYLE = """
 <style>
+/* Tokens are unconditional, not behind a prefers-color-scheme query: .streamlit/
+   config.toml pins the app to a light theme, so the page's actual background
+   never turns dark. A dark-mode override keyed to the OS/browser preference
+   would then fire on its own - painting light text meant for a dark surface
+   onto the white one Streamlit is still rendering, which reads as invisible
+   text. One committed palette, always applied, keeps the two in sync. */
 :root {
   --ink:      #14161a;
   --ink-soft: #5b6270;
@@ -276,14 +360,11 @@ STYLE = """
   --warn-wash:#fdf8ec;
   --warn-line:#ecdcb4;
 }
-@media (prefers-color-scheme: dark) {
-  :root {
-    --ink:#eceef2; --ink-soft:#a3aab8; --ink-faint:#7b8393;
-    --line:#2a2e36; --line-soft:#22262d; --surface:#15181d;
-    --ai:#e0a469; --ai-wash:#221a12; --real:#6ec8b6; --real-wash:#12201d;
-    --warn:#e2be74; --warn-wash:#211c11; --warn-line:#4a3f24;
-  }
-}
+
+/* Belt-and-suspenders on top of .streamlit/config.toml's backgroundColor: the
+   page background is stated here too, so the light palette above is never
+   applied over a background it doesn't actually match. */
+[data-testid="stAppViewContainer"], [data-testid="stMain"], .stApp { background:var(--surface) !important; }
 
 /* a quiet frame: no toolbar, no chrome, generous air */
 #MainMenu, header[data-testid="stHeader"], footer,
@@ -494,6 +575,10 @@ if upload is None:
 
 # ---------------------------------------------------------------- pipeline
 
+ENGINE_START_STAGES = (
+    "Starting MATLAB…",
+    "Loading toolboxes…",
+)
 MATLAB_STAGES = (
     "Cropping the 256×256 analysis window…",
     "Measuring spatial statistics and GLCM texture…",
@@ -541,12 +626,21 @@ def run_pipeline(image_bytes, filename, slot):
                             detail=str(exc))
     width, height = image.size
 
-    matlab = find_matlab()
-    if matlab is None:
-        raise PipelineError(
-            "MATLAB was not found on this machine.",
-            hint="The feature extractor is MATLAB code. Set MATLAB_EXE to the "
-                 "binary's full path, or add it to PATH, then reload this page.")
+    # The Engine API session is the fast path: cached process-wide, so this
+    # costs a MATLAB startup only the first time any user calls it, not once
+    # per upload. Absent or failing to start, it returns None and the
+    # subprocess path below behaves exactly as it always has.
+    engine = staged(slot, ENGINE_START_STAGES, get_matlab_engine, dwell=1.2)
+
+    matlab = None
+    if engine is None:
+        matlab = find_matlab()
+        if matlab is None:
+            raise PipelineError(
+                "MATLAB was not found on this machine.",
+                hint="The feature extractor is MATLAB code. Set MATLAB_EXE to "
+                     "the binary's full path, or add it to PATH, then reload "
+                     "this page.")
 
     bundle = load_bundle()          # fails fast, before the expensive stage
 
@@ -555,8 +649,11 @@ def run_pipeline(image_bytes, filename, slot):
         source = work_dir / f"input{Path(filename).suffix.lower() or '.png'}"
         source.write_bytes(image_bytes)
 
-        features, png_bytes, log = staged(
-            slot, MATLAB_STAGES, lambda: run_matlab(matlab, source, work_dir))
+        if engine is not None:
+            work = lambda: run_matlab_engine(engine, source, work_dir)
+        else:
+            work = lambda: run_matlab_subprocess(matlab, source, work_dir)
+        features, png_bytes, log = staged(slot, MATLAB_STAGES, work)
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
 
