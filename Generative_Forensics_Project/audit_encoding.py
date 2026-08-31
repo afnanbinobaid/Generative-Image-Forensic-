@@ -297,11 +297,22 @@ def trivial_cue_test(rows):
     print(f"    accuracy  {acc:.4f}")
     print("    features  file size, bytes/pixel, dimensions, aspect,")
     print("              quantisation table, chroma subsampling, extension")
-    return auc
+
+    # At 40,000 rows a small AUC is still many standard errors from chance, so
+    # "close to 0.50" is not the same claim as "indistinguishable from 0.50".
+    # Reporting the distance in sd keeps a residual visible instead of letting
+    # a loose threshold wave it through.
+    if auc_sd > 0:
+        sigma = (auc - 0.5) / auc_sd
+        if sigma >= 3:
+            print(f"    -> {sigma:.1f} sd above chance: small, but real, not noise")
+        else:
+            print(f"    -> {sigma:.1f} sd above chance: consistent with no shortcut")
+    return auc, auc_sd
 
 
 def verdict(auc, ext_exclusive_frac, q_exclusive_frac, bpp_ratio, res_ratio,
-            res_sep=0.5, bpp_sep=0.5):
+            res_sep=0.5, bpp_sep=0.5, auc_sd=0.0):
     print("\n" + "=" * 70)
     print("  VERDICT")
     print("=" * 70)
@@ -346,6 +357,21 @@ def verdict(auc, ext_exclusive_frac, q_exclusive_frac, bpp_ratio, res_ratio,
                 "     including audit_folders.m's - passes this cleanly and should not.")
 
     if not problems:
+        sigma = (auc - 0.5) / auc_sd if (auc is not None and auc_sd) else 0.0
+        if sigma >= 3:
+            print("\n  No container SHORTCUT - nothing here decides the label on its own.")
+            print(f"  But the metadata AUC of {auc:.4f} sits {sigma:.1f} sd above chance, which at")
+            print("  this sample size is a real residual rather than noise. Every categorical")
+            print("  property is now identical across classes, so the only thing left varying")
+            print("  is file size at fixed encoder settings - a proxy for how compressible the")
+            print("  picture is.")
+            print("\n  That is genuinely ambiguous and should be reported, not rounded away:")
+            print("    - it may be the signal itself, if generated images really are smoother")
+            print("    - it may be leftover history, if one class arrived already compressed")
+            print("      harder; resampling removes the DCT grid signature but not the")
+            print("      bandwidth that earlier compression already took away")
+            print("  Quote this number as the control's floor. Do not quote 0.50.")
+            return 0
         print("\n  No container-level shortcut found. The classes are not separable")
         print("  from metadata, so an in-distribution score is measuring content.")
         return 0
@@ -427,7 +453,7 @@ def main():
     print("  THE DECISIVE TEST")
     print("-" * 70)
     print("\n  Native files only:")
-    auc_native = trivial_cue_test(native)
+    auc_native, sd_native = trivial_cue_test(native)
     if augmented:
         print("\n  All files, native and augmented together (what training actually saw):")
         trivial_cue_test(rows)
@@ -435,7 +461,7 @@ def main():
     verdict(auc_native,
             ext_excl / max(ext_n, 1),
             q_excl / max(q_n, 1),
-            bpp_ratio, res_ratio, res_sep, bpp_sep)
+            bpp_ratio, res_ratio, res_sep, bpp_sep, sd_native)
 
 
 if __name__ == "__main__":
