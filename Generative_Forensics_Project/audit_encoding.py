@@ -170,26 +170,78 @@ def crosstab(rows, key, title, note=None):
     return exclusive, n
 
 
+def best_single_threshold(a, b):
+    """Best accuracy any single cut on this one number can reach.
+
+    A median ratio can look harmless while the two ranges do not overlap at
+    all - 450-500 against 512-1024 is a median gap of 1.02x and a perfect
+    separator. Comparing medians alone misses exactly the confound that
+    matters most, so the separability is measured directly instead.
+    """
+    vals = np.concatenate([a, b])
+    labels = np.concatenate([np.zeros(len(a)), np.ones(len(b))])
+    order = np.argsort(vals, kind="mergesort")
+    vals, labels = vals[order], labels[order]
+    n = len(vals)
+
+    # Always-guess-the-majority is the floor; a column that carries no
+    # information must score exactly this and not a point more.
+    baseline = float(max(labels.mean(), 1.0 - labels.mean()))
+
+    # Only a cut BETWEEN two distinct values is a real threshold. Sweeping
+    # every index instead would let ties be split in whatever order the sort
+    # happened to leave them, and a constant column would score 100%.
+    boundaries = np.nonzero(np.diff(vals))[0]
+    if not len(boundaries):
+        return baseline
+
+    ones_below = np.cumsum(labels)
+    zeros_below = np.cumsum(1 - labels)
+    total_ones = labels.sum()
+
+    # predict "real" at or below the cut, "AI" above it
+    correct = zeros_below[boundaries] + (total_ones - ones_below[boundaries])
+    acc = correct / n
+    return float(max(baseline, acc.max(), (1.0 - acc).max()))
+
+
 def summarise_numeric(rows, key, title):
     classes = ("real", "ai")
     print(f"\n  {title}")
     print(f"    {'class':<10}{'median':>12}{'mean':>12}{'min':>12}{'max':>12}")
     print("    " + "-" * 58)
-    med = {}
+    med, arrays = {}, {}
     for c in classes:
         vals = np.array([r[key] for r in rows
                          if r["label"] == c and not np.isnan(r.get(key, np.nan))])
         if not len(vals):
             continue
         med[c] = float(np.median(vals))
+        arrays[c] = vals
         print(f"    {c:<10}{np.median(vals):>12.4g}{vals.mean():>12.4g}"
               f"{vals.min():>12.4g}{vals.max():>12.4g}")
+
+    ratio = 1.0
     if len(med) == 2 and min(med.values()) > 0:
         ratio = max(med.values()) / min(med.values())
         bigger = max(med, key=med.get)
         print(f"    -> median gap {ratio:.2f}x  ({bigger} larger)")
-        return ratio
-    return 1.0
+
+    if len(arrays) == 2:
+        a, b = arrays["real"], arrays["ai"]
+        sep = best_single_threshold(a, b)
+        overlap_lo, overlap_hi = max(a.min(), b.min()), min(a.max(), b.max())
+        disjoint = overlap_lo > overlap_hi
+        print(f"    -> this number ALONE classifies at {sep*100:.1f}% "
+              f"with one threshold", end="")
+        if disjoint:
+            print("   <- RANGES DO NOT OVERLAP")
+        elif sep >= 0.90:
+            print("   <- near-perfect separator")
+        else:
+            print()
+        return ratio, sep
+    return ratio, 0.5
 
 
 def trivial_cue_test(rows):
@@ -240,15 +292,16 @@ def trivial_cue_test(rows):
     auc, auc_sd = float(np.mean(aucs)), float(np.std(aucs))
     acc = float(np.mean(accs))
 
-    print(f"\n  Metadata-only classifier, 5-fold grouped CV, NO pixels read")
+    print("\n  Metadata-only classifier, 5-fold grouped CV, NO pixels read")
     print(f"    ROC-AUC   {auc:.4f}  (sd {auc_sd:.4f})")
     print(f"    accuracy  {acc:.4f}")
-    print(f"    features  file size, bytes/pixel, dimensions, aspect,")
-    print(f"              quantisation table, chroma subsampling, extension")
+    print("    features  file size, bytes/pixel, dimensions, aspect,")
+    print("              quantisation table, chroma subsampling, extension")
     return auc
 
 
-def verdict(auc, ext_exclusive_frac, q_exclusive_frac, bpp_ratio, res_ratio):
+def verdict(auc, ext_exclusive_frac, q_exclusive_frac, bpp_ratio, res_ratio,
+            res_sep=0.5, bpp_sep=0.5):
     print("\n" + "=" * 70)
     print("  VERDICT")
     print("=" * 70)
@@ -283,6 +336,14 @@ def verdict(auc, ext_exclusive_frac, q_exclusive_frac, bpp_ratio, res_ratio):
     if res_ratio >= 1.25:
         problems.append(
             f"Resolution gap of {res_ratio:.2f}x exceeds the project's own 1.25x limit.")
+
+    for name, sep, ratio in (("Native width", res_sep, res_ratio),
+                             ("Bytes per pixel", bpp_sep, bpp_ratio)):
+        if sep >= 0.90 and ratio < 1.25:
+            problems.append(
+                f"{name} alone classifies at {sep*100:.1f}% with a single threshold,\n"
+                f"     while its median gap is only {ratio:.2f}x. A median comparison -\n"
+                "     including audit_folders.m's - passes this cleanly and should not.")
 
     if not problems:
         print("\n  No container-level shortcut found. The classes are not separable")
@@ -352,8 +413,8 @@ def main():
         "the encoder's fingerprint; it shapes the DCT statistics the features read")
     crosstab(native, "subsampling", "Chroma subsampling by class")
 
-    res_ratio = summarise_numeric(native, "width", "Width (px)")
-    bpp_ratio = summarise_numeric(native, "bpp", "Bytes per pixel")
+    res_ratio, res_sep = summarise_numeric(native, "width", "Width (px)")
+    bpp_ratio, bpp_sep = summarise_numeric(native, "bpp", "Bytes per pixel")
 
     if augmented:
         print("\n" + "-" * 70)
@@ -374,7 +435,7 @@ def main():
     verdict(auc_native,
             ext_excl / max(ext_n, 1),
             q_excl / max(q_n, 1),
-            bpp_ratio, res_ratio)
+            bpp_ratio, res_ratio, res_sep, bpp_sep)
 
 
 if __name__ == "__main__":
