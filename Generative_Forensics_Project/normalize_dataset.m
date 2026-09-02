@@ -116,13 +116,10 @@ function normalize_dataset(outRoot, cropSide, targetSide, quality)
                    'skippedAug', 0, 'failed', 0);
 
     for k = 1:numel(classes)
-        fprintf('  %s\n', classes{k});
         s = normalize_folder(fullfile(pwd, srcRoot,  classes{k}), ...
                              fullfile(pwd, outRoot, classes{k}), ...
                              cropSide, targetSide, quality);
-
-        fprintf('    written %d   already there %d   too small %d   failed %d\n\n', ...
-                s.written, s.existed, s.skippedSmall, s.failed);
+        fprintf('\n');
 
         for f = {'written', 'existed', 'skippedSmall', 'skippedAug', 'failed'}
             total.(f{1}) = total.(f{1}) + s.(f{1});

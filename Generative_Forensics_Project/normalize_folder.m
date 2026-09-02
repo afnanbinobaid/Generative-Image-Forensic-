@@ -133,6 +133,37 @@ function stats = normalize_folder(srcDir, dstDir, cropSide, targetSide, quality)
     end
 
     stats.droppedSizes = dropped;
+
+    %% ---------------------------------------------------------- summary
+    fprintf('  %s\n', srcDir);
+    fprintf('    written %d   already there %d   too small %d   failed %d\n', ...
+            stats.written, stats.existed, stats.skippedSmall, stats.failed);
+
+    kept = stats.written + stats.existed;
+    seen = kept + stats.skippedSmall + stats.failed;
+    if seen > 0
+        fprintf('    kept %d of %d (%.0f%%)\n', kept, seen, 100 * kept / seen);
+    end
+
+    % A dropped image is not a rounding error - it is a photograph the model
+    % has no answer for. On a test folder the drops decide what the accuracy
+    % afterwards is even measuring, so their size is reported rather than
+    % left as a count.
+    if stats.skippedSmall > 0
+        shortSide = min(dropped, [], 2);
+        fprintf(2, ['    %d image(s) were under %dpx on the short side and were DROPPED.\n' ...
+                    '      their short sides: min %d, median %d, max %d\n' ...
+                    '      Dropped, not upscaled - upscaling is a low-pass filter and would\n' ...
+                    '      push them toward the AI verdict for a reason unrelated to origin.\n'], ...
+                stats.skippedSmall, cropSide, ...
+                min(shortSide), round(median(shortSide)), max(shortSide));
+
+        if kept > 0 && stats.skippedSmall > kept
+            fprintf(2, ['      MORE WERE DROPPED THAN KEPT. Whatever is measured on what\n' ...
+                        '      survives is a statement about large images only, not about\n' ...
+                        '      this folder.\n']);
+        end
+    end
 end
 
 
