@@ -17,6 +17,10 @@ function make_augmented(doResizeVariant)
 %       _qhi      re-saved as JPEG, quality drawn from 70-95
 %       _qlo      re-saved as JPEG, quality drawn from 40-70
 %       _rweb     shrunk 60-90% then saved as JPEG 70-95 (a web pipeline)
+%       _soft     shrunk by the same 60-90% as _rweb and scaled BACK UP,
+%                 then JPEG 70-95 - the same detail loss with the pixel
+%                 count preserved, so it survives on small images where
+%                 _rweb cannot be written
 %
 %   Re-saving an already-JPEG image double-compresses it. That is deliberate:
 %   web photographs are almost always compressed more than once - saved by the
@@ -31,7 +35,7 @@ function make_augmented(doResizeVariant)
 %   changes. Running this twice is safe: already-augmented files are skipped
 %   rather than compounded.
 %
-%   To undo, delete every file matching *_qhi.*, *_qlo.* and *_rweb.*
+%   To undo, delete every file matching *_qhi.*, *_qlo.*, *_rweb.* and *_soft.*
 %   (If an earlier run left *_q85.*, *_q60.* or *_r75q85.* files, delete those
 %   too - they are recognised and not re-augmented, but they are redundant.)
 %
@@ -77,7 +81,7 @@ function make_augmented(doResizeVariant)
 
         isImage = ~cellfun(@isempty, regexpi(names, '\.(jpe?g|png)$', 'once'));
         % Never augment an augmented file - that would stack compression.
-        isMade  = ~cellfun(@isempty, regexpi(names, '_(qhi|qlo|rweb|q85|q60|r75q85)\.', 'once'));
+        isMade  = ~cellfun(@isempty, regexpi(names, '_(qhi|qlo|rweb|soft|q85|q60|r75q85)\.', 'once'));
         names   = sort(names(isImage & ~isMade));
 
         fprintf('%s: %d original images\n', labels{f}, numel(names));
@@ -115,6 +119,25 @@ function make_augmented(doResizeVariant)
                     nExisted = nExisted + 1;
                 else
                     imwrite(img, outLo, 'Quality', randQuality(Q_LO));
+                    nMade = nMade + 1;
+                end
+
+                % Detail loss WITHOUT a dimension change. _rweb shrinks the
+                % file, so on an already-normalised 320px set it lands under
+                % MIN_AFTER and is skipped - which silently removed the one
+                % variant that taught the model to ignore web laundering.
+                % This one throws the same information away and puts the
+                % pixel count back, so it survives at any size. It is also
+                % the exact operation the extractor performs on a small
+                % image: downscale happened somewhere, upscale to measure.
+                outS = fullfile(folder, [base '_soft.jpg']);
+                if isfile(outS)
+                    nExisted = nExisted + 1;
+                else
+                    sFactor = R_RANGE(1) + rand * (R_RANGE(2) - R_RANGE(1));
+                    shrunk  = imresize(img, sFactor);
+                    restored = imresize(shrunk, [size(img, 1) size(img, 2)]);
+                    imwrite(restored, outS, 'Quality', randQuality(Q_HI));
                     nMade = nMade + 1;
                 end
 

@@ -70,7 +70,7 @@ function stats = normalize_folder(srcDir, dstDir, cropSide, targetSide, quality)
     % the old ones across would stack a second compression on images that have
     % already been through one.
     isMade  = ~cellfun(@isempty, ...
-                       regexpi(names, '_(qhi|qlo|rweb|q85|q60|r75q85)\.', 'once'));
+                       regexpi(names, '_(qhi|qlo|rweb|soft|q85|q60|r75q85)\.', 'once'));
     skippedAug = sum(isImage & isMade);
     names = sort(names(isImage & ~isMade));
 

@@ -36,13 +36,17 @@ PREPROCESS    = 'crop';      % 'crop'   = cut a 256x256 window from the centre
 NUM_FEATURES  = 230;         % feature count, excluding the label
 PROGRESS_STEP = 100;         % print a progress line every N images
 
-AUG_SAMPLE_FRAC = 0.5;       % fraction of AUGMENTED siblings to extract.
+AUG_SAMPLE_FRAC = 1.0;       % fraction of AUGMENTED siblings to extract.
                              % Every original image is always kept in full;
                              % this only thins the _qhi/_qlo/_rweb (or legacy
                              % _q85/_q60/_r75q85) copies make_augmented.m adds.
-                             % 0.5 roughly halves extraction time on an
-                             % already-augmented dataset without dropping any
-                             % original photograph. 1.0 = extract everything.
+                             % 1.0 = extract everything. It was 0.5 as a
+                             % speed measure, until a web test showed what
+                             % that costs: halving the compressed copies
+                             % halves the evidence that compression is
+                             % uninformative, which is the whole mechanism
+                             % behind section 9's fix. Extraction time is not
+                             % worth paying for in specificity.
 AUG_SAMPLE_SEED = 42;        % reproducible sampling
 
 projectRoot = pwd;
@@ -195,7 +199,7 @@ function [files, nDropped] = sampleAugmented(files, frac, seed)
 
     [~, stems] = cellfun(@fileparts, files, 'UniformOutput', false);
     isAug = ~cellfun(@isempty, ...
-        regexpi(stems, '_(qhi|qlo|rweb|q85|q60|r75q85)$', 'once'));
+        regexpi(stems, '_(qhi|qlo|rweb|soft|q85|q60|r75q85)$', 'once'));
 
     originals = files(~isAug);
     augmented = files(isAug);

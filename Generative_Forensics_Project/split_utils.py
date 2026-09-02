@@ -20,7 +20,7 @@ from sklearn.model_selection import StratifiedGroupKFold, train_test_split
 # The suffixes make_augmented.m appends. Stripped to recover the source photo.
 # qhi/qlo/rweb are the current random-quality names; q85/q60/r75q85 are kept so
 # a dataset augmented before that change still groups correctly.
-AUG_SUFFIX = re.compile(r"_(qhi|qlo|rweb|q85|q60|r75q85)$", re.IGNORECASE)
+AUG_SUFFIX = re.compile(r"_(qhi|qlo|rweb|soft|q85|q60|r75q85)$", re.IGNORECASE)
 
 TEST_FRAC = 0.20
 

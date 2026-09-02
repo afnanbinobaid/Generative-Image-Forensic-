@@ -48,7 +48,7 @@ try:
 except ImportError:
     sys.exit("ERROR: needs pillow.  pip install pillow")
 
-AUG_SUFFIXES = ("_qhi", "_qlo", "_rweb", "_q85", "_q60", "_r75q85")
+AUG_SUFFIXES = ("_qhi", "_qlo", "_rweb", "_soft", "_q85", "_q60", "_r75q85")
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 
 DEFAULT_REAL = Path("Dataset") / "Real_Images"

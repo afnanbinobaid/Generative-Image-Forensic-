@@ -29,6 +29,7 @@ HERE = Path(__file__).resolve().parent
 SOURCE_MARKERS = {
     "split_utils.py": [
         ("qhi|qlo|rweb", "recognises the current augmentation suffixes"),
+        ("soft", "recognises the _soft detail-loss variant"),
         ("make_split_3way", "can carve a calibration slice"),
     ],
     "train_model.py": [
