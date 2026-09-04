@@ -22,8 +22,6 @@ from pathlib import Path
 import numpy as np
 import joblib
 
-from final_test import wilson      # one definition of the interval
-
 MODEL_PATH = Path(__file__).resolve().parent / "model.joblib"
 
 
@@ -61,14 +59,7 @@ def main():
              else [f"row {i+1}" for i in range(len(scores))])
 
     print(f"Scored {len(scores)} images from {csv_path.name}")
-    print(f"Model threshold: {threshold:.4f}")
-    print("\nThese images must have been through normalize_folder before")
-    print("extract_folder, the same as the training set was. Scoring raw")
-    print("images against a model trained on normalised ones measures the")
-    print("difference between the two pipelines, not what the picture is.")
-    print("And run audit_encoding.py on the source folders first: a class")
-    print("that is systematically larger or less compressed than the other")
-    print("decides the verdict on its own.\n")
+    print(f"Model threshold: {threshold:.4f}\n")
     print("=" * 58)
     print(f"Predicted AI    : {pred_ai.sum()}  ({pred_ai.mean():.1%})")
     print(f"Predicted real  : {(~pred_ai).sum()}  ({(~pred_ai).mean():.1%})")
@@ -77,14 +68,9 @@ def main():
 
     if truth is not None:
         correct = pred_ai if truth == "ai" else ~pred_ai
-        lo, hi = wilson(int(correct.sum()), len(correct))
         print(f"\nGround truth    : all {truth.upper()}")
         print(f"Accuracy        : {correct.mean():.1%}  "
-              f"(95% CI {lo:.1%} - {hi:.1%})  "
-              f"{correct.sum()} / {len(correct)}")
-        if len(correct) < 100:
-            print(f"                  n={len(correct)} is small - read the "
-                  f"interval, not the point estimate.")
+              f"({correct.sum()} / {len(correct)})")
         print("\nNo image here took part in training, so this is a clean "
               "generalisation figure.")
 
