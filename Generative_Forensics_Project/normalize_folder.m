@@ -108,19 +108,15 @@ function stats = normalize_folder(srcDir, dstDir, cropSide, targetSide, quality)
         end
 
         try
-            img = toUint8Rgb(imread(src));
-
-            [h, w, ~] = size(img);
-            if h < cropSide || w < cropSide
+            % normalize_image.m owns the treatment; demo_image.m calls the same
+            % function, so a live upload and a training image cannot drift apart.
+            if normalize_image(src, dst, cropSide, targetSide, quality)
+                stats.written = stats.written + 1;
+            else
+                info = imfinfo(src);
                 stats.skippedSmall = stats.skippedSmall + 1;
-                dropped(end+1, :) = [w h];  %#ok<AGROW>
-                continue;
+                dropped(end+1, :) = [info(1).Width info(1).Height];  %#ok<AGROW>
             end
-
-            crop  = centreCrop(img, cropSide);
-            small = imresize(crop, [targetSide targetSide], 'bicubic');
-            imwrite(decimateChroma(small), dst, 'Quality', quality);
-            stats.written = stats.written + 1;
 
         catch err
             stats.failed = stats.failed + 1;
@@ -164,69 +160,4 @@ function stats = normalize_folder(srcDir, dstDir, cropSide, targetSide, quality)
                         '      this folder.\n']);
         end
     end
-end
-
-
-%% ================================================================
-%  Local functions
-%  ================================================================
-
-function img = toUint8Rgb(img)
-%TOUINT8RGB  Force any imread output into 3-channel uint8 RGB.
-%   Matches extractImageFeatures.m, so the normalised set is built on the same
-%   convention the features are measured with.
-
-    if ~isa(img, 'uint8')
-        img = im2uint8(img);
-    end
-
-    nCh = size(img, 3);
-    if nCh == 1
-        img = repmat(img, [1 1 3]);          % grayscale -> RGB
-    elseif nCh == 2
-        img = repmat(img(:,:,1), [1 1 3]);   % gray + alpha -> drop alpha
-    elseif nCh >= 4
-        img = img(:,:,1:3);                  % RGBA / CMYK-ish -> drop extras
-    end
-end
-
-
-function out = centreCrop(img, side)
-%CENTRECROP  A side x side centre crop at native scale.
-%   The origin snaps to a multiple of 8 so the crop stays aligned with the
-%   JPEG DCT block grid, exactly as extractImageFeatures.m does.
-
-    [h, w, ~] = size(img);
-
-    r0 = floor((h - side) / 2);
-    c0 = floor((w - side) / 2);
-    r0 = r0 - mod(r0, 8) + 1;
-    c0 = c0 - mod(c0, 8) + 1;
-
-    out = img(r0:r0+side-1, c0:c0+side-1, :);
-end
-
-
-function img = decimateChroma(img)
-%DECIMATECHROMA  Halve the chroma resolution, the way 4:2:0 does.
-%
-%   Done in pixels rather than by asking the encoder for 4:2:0, because
-%   MATLAB's imwrite picks subsampling from the quality value internally and
-%   does not expose it. Stating the operation here makes it reproducible and
-%   inspectable instead of a side effect of an encoder setting.
-%
-%   Applied to an image that was already 4:2:0 it changes very little - the
-%   detail it removes is already gone - which is what makes it safe to run on
-%   both classes rather than only on the one that needs it.
-
-    ycc = rgb2ycbcr(img);
-    y   = ycc(:,:,1);
-    cb  = ycc(:,:,2);
-    cr  = ycc(:,:,3);
-
-    full = size(cb);
-    cb = imresize(imresize(cb, 0.5, 'box'), full, 'bilinear');
-    cr = imresize(imresize(cr, 0.5, 'box'), full, 'bilinear');
-
-    img = ycbcr2rgb(cat(3, y, cb, cr));
 end

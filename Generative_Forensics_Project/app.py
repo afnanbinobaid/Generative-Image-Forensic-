@@ -72,9 +72,27 @@ def _timeout_from_env(name, default):
 
 
 N_FEATURES     = 230
-ANALYSIS_SIDE  = 256          # the crop the extractor measures
+# The floor is normalize_image's crop, not the extractor's 256 window. Below it
+# the image cannot be given the treatment the training set received, so it gets
+# no verdict rather than a confident wrong one.
+NORMALISE_CROP = 448
 TOP_DRIVERS    = 5
 MATLAB_TIMEOUT = _timeout_from_env("GIF_MATLAB_TIMEOUT", 300)
+
+
+class OutOfRange(Exception):
+    """The image is below the normalisation floor, so there is no verdict.
+
+    Not an error. The model was trained on images normalised through a 448px
+    crop; anything smaller cannot receive that treatment, and upscaling it
+    would low-pass filter it into looking generated. Declining is the honest
+    answer, and it is the one the demonstration shows.
+    """
+
+    def __init__(self, width, height):
+        super().__init__("below the normalisation floor")
+        self.width = width
+        self.height = height
 
 
 class PipelineError(Exception):
@@ -125,6 +143,12 @@ def _collect_outputs(work_dir, log):
     are validated identically and can never disagree about what "succeeded"
     means.
     """
+    for line in (log or "").splitlines():
+        if line.strip().startswith("TOOSMALL"):
+            parts = line.split()
+            w, h = (int(parts[1]), int(parts[2])) if len(parts) >= 3 else (0, 0)
+            raise OutOfRange(w, h)
+
     csv_path = Path(work_dir) / FEATURES_CSV
     if not csv_path.exists():
         # A non-zero exit (or, on the Engine path, a clean return) is the usual
@@ -628,10 +652,11 @@ def error_card(err):
 block(
     '<div class="gf-eyebrow">Digital signal processing &nbsp;·&nbsp; gradient-boosted ensemble</div>'
     '<h1 class="gf-title">Generative Image Forensics</h1>'
-    '<p class="gf-lede">Upload a photograph. MATLAB measures 230 signal-processing '
-    'features from a native-scale 256&times;256 crop; a calibrated classifier reads them '
-    'and reports whether the image was generated - and exactly which measurements '
-    'made it say so.</p>'
+    '<p class="gf-lede">Upload a photograph. It is put through the same container '
+    'normalisation the training set went through - a 448&nbsp;px centre crop resampled '
+    'to 320&nbsp;px and re-encoded - then MATLAB measures 230 signal-processing features '
+    'and a calibrated classifier reports whether the image was generated, and exactly '
+    'which measurements made it say so.</p>'
 )
 st.markdown('<hr class="gf-rule">', unsafe_allow_html=True)
 
@@ -639,8 +664,9 @@ upload = st.file_uploader("Image", type=["jpg", "jpeg", "png"],
                           label_visibility="collapsed")
 
 if upload is None:
-    block('<p class="gf-subline">JPEG or PNG. Images below 256&nbsp;px on either '
-          'side can still be analysed, with a caveat.</p>')
+    block('<p class="gf-subline">JPEG or PNG, at least 448&nbsp;px on the shorter '
+          'side - below that the image cannot be given the treatment the training set '
+          'received, so there is no verdict.</p>')
     st.stop()
 
 
@@ -651,7 +677,7 @@ ENGINE_START_STAGES = (
     "Loading toolboxes…",
 )
 MATLAB_STAGES = (
-    "Cropping the 256×256 analysis window…",
+    "Normalising the container - crop, resample, re-encode…",
     "Measuring spatial statistics and GLCM texture…",
     "Decomposing db4 wavelet subbands…",
     "Computing the Fourier radial spectrum…",
@@ -739,10 +765,6 @@ def run_pipeline(image_bytes, filename, slot):
         "filename": filename,
         "width": width,
         "height": height,
-        # Below the analysis window the extractor has to upscale, which is a
-        # low-pass filter: it attenuates exactly the high-frequency evidence
-        # the model relies on. Flagged here, surfaced with the verdict.
-        "upscaled": min(width, height) < ANALYSIS_SIDE,
         "png": png_bytes,
         "matlab_log": log,
         "bundle": bundle,
@@ -760,7 +782,7 @@ if st.session_state.get("digest") != digest:
         st.session_state["result"] = run_pipeline(upload.getvalue(), upload.name, slot)
         st.session_state["digest"] = digest
         st.session_state.pop("failure", None)
-    except PipelineError as err:
+    except (PipelineError, OutOfRange) as err:
         st.session_state["failure"] = err
         st.session_state["digest"] = digest
         st.session_state.pop("result", None)
@@ -768,7 +790,28 @@ if st.session_state.get("digest") != digest:
         slot.empty()
 
 if st.session_state.get("failure") is not None:
-    error_card(st.session_state["failure"])
+    failure = st.session_state["failure"]
+    if isinstance(failure, OutOfRange):
+        # Declining is the honest answer here, so it is presented as a finding
+        # rather than as a fault - which is also the more interesting thing to
+        # show an audience.
+        block(
+            '<div class="gf-reveal gf-d1 gf-warn">'
+            '  <div class="gf-warn-title">No verdict &mdash; outside operating range</div>'
+            f' <p class="gf-warn-body">This image is {failure.width}&times;{failure.height}&nbsp;px. '
+            f'Every image the model was trained on was normalised through a '
+            f'{NORMALISE_CROP}&times;{NORMALISE_CROP} crop at native scale, and an image '
+            'smaller than that cannot be given the same treatment. The only way to '
+            'measure it would be to upscale it first &mdash; and upscaling is a low-pass '
+            'filter that strips exactly the high-frequency energy this detector reads, '
+            'pushing any photograph toward the AI verdict for a reason that has nothing '
+            'to do with how it was made.</p>'
+            f' <p class="gf-warn-body" style="margin-top:.7rem">So the detector declines. '
+            f'Upload an image at least {NORMALISE_CROP}&nbsp;px on the shorter side.</p>'
+            '</div>'
+        )
+        st.stop()
+    error_card(failure)
     st.stop()
 
 res = st.session_state["result"]
@@ -803,18 +846,6 @@ if not res["calibrated"]:
     st.caption("This model's scores were left uncalibrated at training time, so "
                "read the sentence above as a ranking rather than a frequency.")
 
-if res["upscaled"]:
-    block(
-        '<div class="gf-reveal gf-d2 gf-warn">'
-        '  <div class="gf-warn-title">Unreliable analysis</div>'
-        f' <p class="gf-warn-body">At {res["width"]}&times;{res["height"]}&nbsp;px this image is '
-        'smaller than the 256&times;256 analysis window, so it was upscaled before '
-        'measurement. Upscaling is a low-pass filter: it attenuates precisely the '
-        'high-frequency wavelet and residual energy this detector reads, and every '
-        'training image was large enough to crop without it. Treat the verdict above '
-        'as indicative only.</p>'
-        '</div>'
-    )
 
 st.markdown('<hr class="gf-rule">', unsafe_allow_html=True)
 

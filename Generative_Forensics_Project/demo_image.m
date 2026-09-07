@@ -5,8 +5,12 @@ function demo_image(imgPath, outDir)
 %   demo_image('cat.jpg')          analyses that file directly
 %   demo_image('cat.jpg', OUTDIR)  headless export mode for the GUI
 %
-%   Export mode writes OUTDIR/temp_features.csv and OUTDIR/dsp_visuals.png and
-%   returns immediately - no window, no Python call. That is the handoff app.py
+%   Export mode normalises the image through normalize_image (the same
+%   treatment the training set received), then writes OUTDIR/temp_features.csv
+%   and OUTDIR/dsp_visuals.png and returns immediately - no window, no Python
+%   call. An image below the normalisation floor prints TOOSMALL and returns
+%   without a feature vector: it is outside the model's operating range, and a
+%   confident verdict on it would be a wrong one. That is the handoff app.py
 %   (the Streamlit GUI) uses: MATLAB measures and draws, the GUI owns the model,
 %   the score and the SHAP explanation, exactly as the interactive path splits
 %   the work between MATLAB and predict_image.py.
@@ -240,15 +244,32 @@ function exportForGui(imgPath, outDir)
 
     original = imread(imgPath);
     [h, w, ~] = size(original);
+    fprintf('DIMS %d %d\n', w, h);
+
+    % The model was trained on normalised images, so a raw upload has to go
+    % through the identical treatment before it is measured. Without this the
+    % detector is asked about a kind of picture it has never seen: a 2000px
+    % photograph cropped at native scale carries far more fine detail than a
+    % 320px training image, and fine detail is what it reads. normalize_image
+    % is the same function normalize_folder used to build the training set.
+    normPath = fullfile(outDir, 'normalised_input.jpg');
+    if ~normalize_image(imgPath, normPath)
+        % Not an error - the image is below the model's operating range, and
+        % upscaling it would low-pass filter it into looking generated. The
+        % GUI reports no verdict rather than a confident wrong one.
+        fprintf('TOOSMALL %d %d\n', w, h);
+        fprintf('DONE\n');
+        return;
+    end
+    fprintf('NORMALISED %s\n', normPath);
 
     % Same function the training set was built with, so the numbers the GUI
     % scores can never drift from the numbers the model learned.
-    [features, crop, grayD] = extractImageFeatures(imgPath, 'crop');
+    [features, crop, grayD] = extractImageFeatures(normPath, 'crop');
 
     csvPath = fullfile(outDir, 'temp_features.csv');
     writematrix(features, csvPath);
 
-    fprintf('DIMS %d %d\n', w, h);
     fprintf('CSV %s\n', csvPath);
 
     pngPath = fullfile(outDir, 'dsp_visuals.png');
