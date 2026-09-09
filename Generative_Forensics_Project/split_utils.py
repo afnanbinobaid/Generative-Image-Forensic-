@@ -2,7 +2,7 @@
 split_utils.py - one definition of the train/test split
 
 Augmentation makes the split non-trivial. Several rows can come from the same
-photograph (the original plus its _qhi, _qlo and _rweb copies), and if some
+photograph (the original plus its _qhi, _qlo, _rweb and _s## copies), and if some
 land in training while others land in test the model can memorise the image
 itself and report an accuracy it has not earned.
 
@@ -18,9 +18,16 @@ import numpy as np
 from sklearn.model_selection import StratifiedGroupKFold, train_test_split
 
 # The suffixes make_augmented.m appends. Stripped to recover the source photo.
-# qhi/qlo/rweb are the current random-quality names; q85/q60/r75q85 are kept so
-# a dataset augmented before that change still groups correctly.
-AUG_SUFFIX = re.compile(r"_(qhi|qlo|rweb|soft|q85|q60|r75q85)$", re.IGNORECASE)
+# qhi/qlo/rweb/soft are the random-quality and detail variants, _s## the fixed
+# scale ladder; q85/q60/r75q85 are kept so a dataset augmented before those
+# changes still groups correctly.
+#
+# The ladder makes this matter more than it used to. It puts the same
+# photograph in the dataset at four detail levels, and detail level is exactly
+# what the model reads - so a split that let _s85 train and _s40 test would
+# report the model recognising the photograph, on the one axis the ladder
+# exists to make uninformative.
+AUG_SUFFIX = re.compile(r"_(qhi|qlo|rweb|soft|s\d+|q85|q60|r75q85)$", re.IGNORECASE)
 
 TEST_FRAC = 0.20
 

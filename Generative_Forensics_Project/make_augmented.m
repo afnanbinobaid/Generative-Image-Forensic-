@@ -21,6 +21,30 @@ function make_augmented(doResizeVariant)
 %                 then JPEG 70-95 - the same detail loss with the pixel
 %                 count preserved, so it survives on small images where
 %                 _rweb cannot be written
+%       _s##      THE SCALE LADDER: the same image at fixed detail levels,
+%                 shrunk to ##% and scaled back up. Not random, and identical
+%                 for every image in both classes.
+%
+%   WHY THE LADDER IS NOT JUST ANOTHER VARIANT
+%
+%   Normalisation now measures every image over the same fraction of itself,
+%   but the images still ARRIVE at that fraction differently: a 6000px camera
+%   file is downsampled 13x to get there and a 460px thumbnail not at all, so
+%   the one that came from a big source is left carrying more detail per pixel.
+%   That is the residue of the fault where a photograph's verdict tracked its
+%   resolution - real under about 1200px, AI over about 1300px, whatever the
+%   picture actually was.
+%
+%   The random _soft draw spreads detail level a little; a fixed ladder spreads
+%   it deliberately and equally. Every photograph now appears in training at
+%   four detail levels under one label, so "how much fine detail per pixel"
+%   cannot separate the classes - there is no setting of it that is more real
+%   or more AI. The rungs are deterministic rather than drawn at random so that
+%   both classes get exactly the same ladder, which is the whole point: a
+%   ladder that went deeper in one class would be a new confound in place of
+%   the old one.
+%
+%   scale_sweep.m is the test that says whether it worked.
 %
 %   Re-saving an already-JPEG image double-compresses it. That is deliberate:
 %   web photographs are almost always compressed more than once - saved by the
@@ -35,7 +59,8 @@ function make_augmented(doResizeVariant)
 %   changes. Running this twice is safe: already-augmented files are skipped
 %   rather than compounded.
 %
-%   To undo, delete every file matching *_qhi.*, *_qlo.*, *_rweb.* and *_soft.*
+%   To undo, delete every file matching *_qhi.*, *_qlo.*, *_rweb.*, *_soft.*
+%   and *_s??.*
 %   (If an earlier run left *_q85.*, *_q60.* or *_r75q85.* files, delete those
 %   too - they are recognised and not re-augmented, but they are redundant.)
 %
@@ -51,6 +76,14 @@ function make_augmented(doResizeVariant)
     Q_LO    = [40 70];       % heavy compression band
     R_RANGE = [0.60 0.90];   % web resize band
     MIN_AFTER = 256;         % below this the extractor upscales, a different effect
+
+    % The scale ladder. Detail levels, not sizes: each rung shrinks by the
+    % factor and puts the pixel count straight back, so a rung can be written
+    % for every image in both classes whatever its dimensions - no rung is
+    % ever skipped for being too small, which is what keeps the two classes'
+    % ladders identical. 0.85 down to 0.40 covers roughly what a 1.2x and a
+    % 2.5x downsample cost, which brackets the range real uploads span.
+    LADDER = [0.85 0.70 0.55 0.40];
 
     rng(42);                 % reproducible draws
 
@@ -81,7 +114,8 @@ function make_augmented(doResizeVariant)
 
         isImage = ~cellfun(@isempty, regexpi(names, '\.(jpe?g|png)$', 'once'));
         % Never augment an augmented file - that would stack compression.
-        isMade  = ~cellfun(@isempty, regexpi(names, '_(qhi|qlo|rweb|soft|q85|q60|r75q85)\.', 'once'));
+        isMade  = ~cellfun(@isempty, ...
+                  regexpi(names, '_(qhi|qlo|rweb|soft|s\d+|q85|q60|r75q85)\.', 'once'));
         names   = sort(names(isImage & ~isMade));
 
         fprintf('%s: %d original images\n', labels{f}, numel(names));
@@ -138,6 +172,20 @@ function make_augmented(doResizeVariant)
                     shrunk  = imresize(img, sFactor);
                     restored = imresize(shrunk, [size(img, 1) size(img, 2)]);
                     imwrite(restored, outS, 'Quality', randQuality(Q_HI));
+                    nMade = nMade + 1;
+                end
+
+                % The scale ladder, identical in both classes.
+                for r = LADDER
+                    outLad = fullfile(folder, ...
+                                      sprintf('%s_s%02d.jpg', base, round(r * 100)));
+                    if isfile(outLad)
+                        nExisted = nExisted + 1;
+                        continue;
+                    end
+                    shrunk   = imresize(img, r);
+                    restored = imresize(shrunk, [size(img, 1) size(img, 2)]);
+                    imwrite(restored, outLad, 'Quality', randQuality(Q_HI));
                     nMade = nMade + 1;
                 end
 
@@ -202,6 +250,10 @@ function make_augmented(doResizeVariant)
     fprintf('  2. feature_extractor          (re-measures everything - this is slow)\n');
     fprintf('  3. python train_model.py\n');
     fprintf('  4. re-run the diagnostics to confirm the fix worked\n');
+    fprintf('  5. scale_sweep(''Dataset/Real_Images'')  then\n');
+    fprintf('     python scale_sweep.py scale_sweep.csv\n');
+    fprintf('     -> the ladder above is what this has to make flat: the same\n');
+    fprintf('        photograph must score the same at every resolution.\n');
 
 end
 

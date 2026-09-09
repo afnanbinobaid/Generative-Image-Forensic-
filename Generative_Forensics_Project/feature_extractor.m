@@ -38,7 +38,7 @@ PROGRESS_STEP = 100;         % print a progress line every N images
 
 AUG_SAMPLE_FRAC = 1.0;       % fraction of AUGMENTED siblings to extract.
                              % Every original image is always kept in full;
-                             % this only thins the _qhi/_qlo/_rweb (or legacy
+                             % this only thins the _qhi/_qlo/_rweb/_s## (or legacy
                              % _q85/_q60/_r75q85) copies make_augmented.m adds.
                              % 1.0 = extract everything. It was 0.5 as a
                              % speed measure, until a web test showed what
@@ -71,7 +71,7 @@ if AUG_SAMPLE_FRAC < 1
     [aiFiles,   nAiDropped]   = sampleAugmented(aiFiles,   AUG_SAMPLE_FRAC, AUG_SAMPLE_SEED);
     fprintf('AUG_SAMPLE_FRAC %.2f: dropped %d augmented Real siblings, %d augmented AI siblings\n', ...
             AUG_SAMPLE_FRAC, nRealDropped, nAiDropped);
-    fprintf('(every original image is kept; only _qhi/_qlo/_rweb copies were thinned)\n\n');
+    fprintf('(every original image is kept; only _qhi/_qlo/_rweb/_s## copies were thinned)\n\n');
 end
 
 % Concatenate both classes up front so progress reporting reflects the
@@ -192,14 +192,14 @@ end
 function [files, nDropped] = sampleAugmented(files, frac, seed)
 %SAMPLEAUGMENTED Keep every original image; keep a random FRAC of the
 %   augmented siblings make_augmented.m added (files whose name ends in
-%   _qhi, _qlo, _rweb, or the legacy _q85/_q60/_r75q85).
+%   _qhi, _qlo, _rweb, _soft, _s##, or the legacy _q85/_q60/_r75q85).
 %
 %   Sampling is seeded, so re-running with the same FRAC picks the same
 %   subset - the extracted CSV stays reproducible.
 
     [~, stems] = cellfun(@fileparts, files, 'UniformOutput', false);
     isAug = ~cellfun(@isempty, ...
-        regexpi(stems, '_(qhi|qlo|rweb|soft|q85|q60|r75q85)$', 'once'));
+        regexpi(stems, '_(qhi|qlo|rweb|soft|s\d+|q85|q60|r75q85)$', 'once'));
 
     originals = files(~isAug);
     augmented = files(isAug);

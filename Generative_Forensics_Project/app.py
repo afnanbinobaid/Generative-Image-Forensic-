@@ -72,10 +72,12 @@ def _timeout_from_env(name, default):
 
 
 N_FEATURES     = 230
-# The floor is normalize_image's crop, not the extractor's 256 window. Below it
-# the image cannot be given the treatment the training set received, so it gets
-# no verdict rather than a confident wrong one.
-NORMALISE_CROP = 448
+# The floor is normalize_image's, not the extractor's 256 window. Below it the
+# image cannot be given the treatment the training set received, so it gets no
+# verdict rather than a confident wrong one. MATLAB reports the floor it
+# actually used on the TOOSMALL line - normalize_defaults.m owns the number, and
+# this is only the fallback for an older MATLAB half that does not send it.
+NORMALISE_FLOOR = 448
 TOP_DRIVERS    = 5
 MATLAB_TIMEOUT = _timeout_from_env("GIF_MATLAB_TIMEOUT", 300)
 
@@ -83,16 +85,18 @@ MATLAB_TIMEOUT = _timeout_from_env("GIF_MATLAB_TIMEOUT", 300)
 class OutOfRange(Exception):
     """The image is below the normalisation floor, so there is no verdict.
 
-    Not an error. The model was trained on images normalised through a 448px
-    crop; anything smaller cannot receive that treatment, and upscaling it
-    would low-pass filter it into looking generated. Declining is the honest
-    answer, and it is the one the demonstration shows.
+    Not an error. The model was trained on images resampled to a fixed short
+    side and measured there; anything already smaller cannot receive that
+    treatment, and upscaling it would low-pass filter it into looking
+    generated. Declining is the honest answer, and it is the one the
+    demonstration shows.
     """
 
-    def __init__(self, width, height):
+    def __init__(self, width, height, floor=NORMALISE_FLOOR):
         super().__init__("below the normalisation floor")
         self.width = width
         self.height = height
+        self.floor = floor
 
 
 class PipelineError(Exception):
@@ -147,7 +151,8 @@ def _collect_outputs(work_dir, log):
         if line.strip().startswith("TOOSMALL"):
             parts = line.split()
             w, h = (int(parts[1]), int(parts[2])) if len(parts) >= 3 else (0, 0)
-            raise OutOfRange(w, h)
+            floor = int(parts[3]) if len(parts) >= 4 else NORMALISE_FLOOR
+            raise OutOfRange(w, h, floor)
 
     csv_path = Path(work_dir) / FEATURES_CSV
     if not csv_path.exists():
@@ -799,15 +804,15 @@ if st.session_state.get("failure") is not None:
             '<div class="gf-reveal gf-d1 gf-warn">'
             '  <div class="gf-warn-title">No verdict &mdash; outside operating range</div>'
             f' <p class="gf-warn-body">This image is {failure.width}&times;{failure.height}&nbsp;px. '
-            f'Every image the model was trained on was normalised through a '
-            f'{NORMALISE_CROP}&times;{NORMALISE_CROP} crop at native scale, and an image '
+            f'Every image the model was trained on was resampled to a '
+            f'{failure.floor}&nbsp;px short side and measured there, and an image already '
             'smaller than that cannot be given the same treatment. The only way to '
             'measure it would be to upscale it first &mdash; and upscaling is a low-pass '
             'filter that strips exactly the high-frequency energy this detector reads, '
             'pushing any photograph toward the AI verdict for a reason that has nothing '
             'to do with how it was made.</p>'
             f' <p class="gf-warn-body" style="margin-top:.7rem">So the detector declines. '
-            f'Upload an image at least {NORMALISE_CROP}&nbsp;px on the shorter side.</p>'
+            f'Upload an image at least {failure.floor}&nbsp;px on the shorter side.</p>'
             '</div>'
         )
         st.stop()

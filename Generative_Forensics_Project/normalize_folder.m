@@ -1,8 +1,9 @@
-function stats = normalize_folder(srcDir, dstDir, cropSide, targetSide, quality)
+function stats = normalize_folder(srcDir, dstDir, varargin)
 %NORMALIZE_FOLDER  Put one folder of images through the container normalisation.
 %
 %   normalize_folder('E:\test\real', 'E:\test\real_norm')
-%   normalize_folder(src, dst, 448, 320, 85)
+%   normalize_folder(src, dst, opts)              opts from normalize_defaults
+%   normalize_folder(src, dst, 448, 320, 85)      legacy positional form
 %   stats = normalize_folder(...)
 %
 %   This is the worker. normalize_dataset.m calls it twice, once per class, and
@@ -23,38 +24,33 @@ function stats = normalize_folder(srcDir, dstDir, cropSide, targetSide, quality)
 %
 %   THE SIZE FLOOR IS NOT A TUNING KNOB
 %
-%   Images smaller than cropSide are DROPPED, not upscaled - upscaling is a
-%   low-pass filter and would reintroduce exactly the confound this removes.
-%   And cropSide must be the SAME value the training set was built with. Lower
-%   it for a test folder and those images have been through a different
-%   pipeline, so any score from them is measuring the pipeline difference.
-%   The floor is the model's operating range: below it, it has no answer.
+%   Images below the floor are DROPPED, not upscaled - upscaling is a low-pass
+%   filter and would reintroduce exactly the confound this removes. The floor
+%   is scaleSide in 'shortside' mode and cropSide in 'native' mode, and it must
+%   be the SAME value the training set was built with. Lower it for a test
+%   folder and those images have been through a different pipeline, so any
+%   score from them is measuring the pipeline difference. The floor is the
+%   model's operating range: below it, it has no answer.
+%
+%   WHAT THE SETTINGS DEFAULT TO comes from normalize_defaults.m, and the
+%   treatment itself lives in normalize_image.m. Nothing here re-states either,
+%   so a test folder cannot be prepared differently from the training set by a
+%   number edited in one file only.
 %
 %   Returns a struct: written, existed, skippedSmall, skippedAug, failed, and
 %   droppedSizes (an N x 2 list of the [width height] that were too small).
 
-    if nargin < 3 || isempty(cropSide),   cropSide   = 448; end
-    if nargin < 4 || isempty(targetSide), targetSide = 320; end
-    if nargin < 5 || isempty(quality),    quality    = 85;  end
+    % normalize_defaults validates the combination, so an impossible one is
+    % rejected here rather than halfway through a folder.
+    opts = parseOptions(varargin);
+    if strcmpi(opts.scaleMode, 'shortside')
+        floorSide = opts.scaleSide;
+    else
+        floorSide = opts.cropSide;
+    end
 
     if ~isfolder(srcDir)
         error('normalize_folder:noSource', 'Cannot find %s', srcDir);
-    end
-    if mod(cropSide, 8) ~= 0
-        error('normalize_folder:badCrop', ...
-              'cropSide must be a multiple of 8 to keep DCT alignment (got %d).', cropSide);
-    end
-    if targetSide < 256
-        error('normalize_folder:tooSmall', ...
-              ['targetSide must be at least 256 - the extractor measures a ' ...
-               '256x256 window (got %d).'], targetSide);
-    end
-    if cropSide / targetSide < 1.25
-        error('normalize_folder:weakResample', ...
-              ['cropSide/targetSide is %.2fx. Below about 1.25x the resample no ' ...
-               'longer\ndestroys the prior DCT grid and the confound survives - ' ...
-               'measured at\n1.02x (d=4.33), 1.12x (d=1.95), 1.27x (d=0.74), ' ...
-               '1.40x (d=0.24).'], cropSide / targetSide);
     end
 
     if ~isfolder(dstDir)
@@ -70,7 +66,7 @@ function stats = normalize_folder(srcDir, dstDir, cropSide, targetSide, quality)
     % the old ones across would stack a second compression on images that have
     % already been through one.
     isMade  = ~cellfun(@isempty, ...
-                       regexpi(names, '_(qhi|qlo|rweb|soft|q85|q60|r75q85)\.', 'once'));
+                       regexpi(names, '_(qhi|qlo|rweb|soft|s\d+|q85|q60|r75q85)\.', 'once'));
     skippedAug = sum(isImage & isMade);
     names = sort(names(isImage & ~isMade));
 
@@ -110,7 +106,7 @@ function stats = normalize_folder(srcDir, dstDir, cropSide, targetSide, quality)
         try
             % normalize_image.m owns the treatment; demo_image.m calls the same
             % function, so a live upload and a training image cannot drift apart.
-            if normalize_image(src, dst, cropSide, targetSide, quality)
+            if normalize_image(src, dst, opts)
                 stats.written = stats.written + 1;
             else
                 info = imfinfo(src);
@@ -151,7 +147,7 @@ function stats = normalize_folder(srcDir, dstDir, cropSide, targetSide, quality)
                     '      their short sides: min %d, median %d, max %d\n' ...
                     '      Dropped, not upscaled - upscaling is a low-pass filter and would\n' ...
                     '      push them toward the AI verdict for a reason unrelated to origin.\n'], ...
-                stats.skippedSmall, cropSide, ...
+                stats.skippedSmall, floorSide, ...
                 min(shortSide), round(median(shortSide)), max(shortSide));
 
         if kept > 0 && stats.skippedSmall > kept
@@ -160,4 +156,33 @@ function stats = normalize_folder(srcDir, dstDir, cropSide, targetSide, quality)
                         '      this folder.\n']);
         end
     end
+end
+
+
+%% ================================================================
+%  Local functions
+%  ================================================================
+
+function opts = parseOptions(args)
+%PARSEOPTIONS  Accept an options struct or the legacy positional form.
+
+    if numel(args) == 1 && isstruct(args{1})
+        opts = normalize_defaults(args{1});
+        return;
+    end
+
+    over  = struct();
+    names = {'cropSide', 'targetSide', 'quality'};
+    if numel(args) > numel(names)
+        error('normalize_folder:tooManyArgs', ...
+              ['Too many arguments. Use normalize_folder(src, dst, OPTS) with a ' ...
+               'struct\nfrom normalize_defaults, or the legacy ' ...
+               '(src, dst, cropSide, targetSide, quality).']);
+    end
+    for i = 1:numel(args)
+        if ~isempty(args{i})
+            over.(names{i}) = args{i};
+        end
+    end
+    opts = normalize_defaults(over);
 end

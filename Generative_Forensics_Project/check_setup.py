@@ -15,6 +15,10 @@ This script checks the three things that can silently disagree:
   2. model.joblib - which features did the run that produced it have?
   3. the clock - was model.joblib saved BEFORE the sources were last changed?
 
+It also checks the MATLAB half, which no Python check can see: a stale
+normalize_image.m hands over 230 features of exactly the right shape, measured
+at the wrong scale.
+
 That third check is the one that catches "I downloaded the new file but did not
 re-run it", which is the most common cause and the least visible.
 """
@@ -30,6 +34,7 @@ SOURCE_MARKERS = {
     "split_utils.py": [
         ("qhi|qlo|rweb", "recognises the current augmentation suffixes"),
         ("soft", "recognises the _soft detail-loss variant"),
+        ("s\\d+", "groups the _s## scale ladder with its source photograph"),
         ("make_split_3way", "can carve a calibration slice"),
     ],
     "train_model.py": [
@@ -51,6 +56,25 @@ SOURCE_MARKERS = {
     "final_test.py": [
         ("check_unseen", "refuses to score training images"),
     ],
+    # The scale sweep is what catches a detector reading upload resolution
+    # instead of origin - the failure that made every image over about 1300px
+    # read as generated. A folder without it has no test for that at all.
+    "scale_sweep.py": [
+        ("MAX_SWING", "fails a model whose score slides with resolution"),
+    ],
+}
+
+# MATLAB files that must be present for the pipeline to be the current one.
+MATLAB_MARKERS = {
+    "normalize_defaults.m": [
+        ("shortside", "normalisation fixes the content scale before cropping"),
+    ],
+    "normalize_image.m": [
+        ("scaleMode", "the treatment honours the scale setting"),
+    ],
+    "scale_sweep.m": [
+        ("writeRung", "the resolution sweep can be generated"),
+    ],
 }
 
 # key in model.joblib -> what its presence proves about the run
@@ -60,6 +84,64 @@ BUNDLE_KEYS = {
     "base_model": "the uncalibrated model was kept for explanations",
     "calibrated": "calibration was attempted",
 }
+
+
+def check_matlab():
+    """The MATLAB half of the pipeline, which the .py checks cannot see.
+
+    A demo whose normalize_image.m predates the scale fix measures a large
+    upload at a magnification no training image was seen at, and the Python
+    files give no sign of it - the features arrive with the right shape and the
+    wrong content.
+    """
+    print("2. MATLAB PIPELINE")
+    print("-" * 66)
+    stale = []
+    for fname, markers in MATLAB_MARKERS.items():
+        path = HERE / fname
+        if not path.exists():
+            print(f"  {fname:<22} MISSING")
+            stale.append(fname)
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        missing = [(m, why) for m, why in markers if m not in text]
+        if missing:
+            stale.append(fname)
+            print(f"  {fname:<22} STALE")
+            for m, why in missing:
+                print(f"      missing {m!r} - cannot confirm it {why}")
+        else:
+            print(f"  {fname:<22} ok")
+
+    if not stale:
+        mode = read_scale_mode()
+        if mode == "native":
+            print()
+            print("  WARNING: normalize_defaults.m has scaleMode 'native'.")
+            print("  That is the setting under which the verdict tracked the")
+            print("  resolution of the upload rather than its origin. Every")
+            print("  score from this folder inherits that unless the mode was")
+            print("  chosen deliberately to reproduce the old pipeline.")
+        elif mode:
+            print(f"  scale mode             {mode}")
+    print()
+    return stale
+
+
+def read_scale_mode():
+    """The scaleMode normalize_defaults.m sets, read without running MATLAB."""
+    path = HERE / "normalize_defaults.m"
+    if not path.exists():
+        return None
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("%") or "'scaleMode'" not in stripped:
+            continue
+        after = stripped.split("'scaleMode'", 1)[1]
+        parts = [p for p in after.split("'") if p.strip(" ,.")]
+        if parts:
+            return parts[0].strip()
+    return None
 
 
 def check_sources():
@@ -89,7 +171,7 @@ def check_sources():
 
 def check_model(newest_source):
     print()
-    print("2. model.joblib")
+    print("3. model.joblib")
     print("-" * 66)
     path = HERE / "model.joblib"
     if not path.exists():
@@ -129,7 +211,7 @@ def check_model(newest_source):
 
 def check_env():
     print()
-    print("3. ENVIRONMENT")
+    print("4. ENVIRONMENT")
     print("-" * 66)
     ok = True
     for mod, needed_for in (("numpy", "everything"),
@@ -150,7 +232,7 @@ def check_env():
 
 def check_data():
     print()
-    print("4. DATA")
+    print("5. DATA")
     print("-" * 66)
     csv = Path("dataset_crop.csv")
     names = Path("filenames_crop.txt")
@@ -178,6 +260,8 @@ def main():
     print("SETUP CHECK")
     print("=" * 66)
     stale_sources, newest = check_sources()
+    print()
+    stale_matlab = check_matlab()
     calibrated, stale_model = check_model(newest)
     env_ok = check_env()
     check_data()
@@ -187,8 +271,13 @@ def main():
     print("WHAT TO DO")
     print("=" * 66)
     todo = []
-    if stale_sources:
-        todo.append(f"Re-download these files: {', '.join(stale_sources)}")
+    if stale_sources or stale_matlab:
+        todo.append("Re-download these files: "
+                    + ", ".join(stale_sources + stale_matlab))
+    if read_scale_mode() == "native":
+        todo.append("Set scaleMode to 'shortside' in normalize_defaults.m, then "
+                    "re-normalise,\n     re-extract and retrain - in 'native' mode "
+                    "the verdict follows the\n     resolution of the upload")
     if not env_ok:
         todo.append("Install the missing packages above")
     if stale_model or not calibrated:

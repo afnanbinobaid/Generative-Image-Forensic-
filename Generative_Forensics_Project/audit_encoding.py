@@ -37,6 +37,7 @@ intact.
 """
 
 import hashlib
+import re
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -49,6 +50,7 @@ except ImportError:
     sys.exit("ERROR: needs pillow.  pip install pillow")
 
 AUG_SUFFIXES = ("_qhi", "_qlo", "_rweb", "_soft", "_q85", "_q60", "_r75q85")
+AUG_PATTERN = re.compile(r"_s\d+$", re.IGNORECASE)   # the fixed scale ladder
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 
 DEFAULT_REAL = Path("Dataset") / "Real_Images"
@@ -57,7 +59,7 @@ DEFAULT_AI = Path("Dataset") / "AI_Images"
 
 def is_augmented(stem):
     low = stem.lower()
-    return any(low.endswith(s) for s in AUG_SUFFIXES)
+    return any(low.endswith(s) for s in AUG_SUFFIXES) or bool(AUG_PATTERN.search(low))
 
 
 def source_stem(stem):

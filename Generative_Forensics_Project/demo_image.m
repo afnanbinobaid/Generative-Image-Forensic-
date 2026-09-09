@@ -5,8 +5,15 @@ function demo_image(imgPath, outDir)
 %   demo_image('cat.jpg')          analyses that file directly
 %   demo_image('cat.jpg', OUTDIR)  headless export mode for the GUI
 %
-%   Export mode normalises the image through normalize_image (the same
-%   treatment the training set received), then writes OUTDIR/temp_features.csv
+%   BOTH paths normalise the image through normalize_image first - the same
+%   treatment the training set received. That is not a detail. Measuring a raw
+%   upload at native scale is what made the detector read the RESOLUTION of the
+%   picture instead of its origin: a 448px window cut from a 4000px photograph
+%   shows a magnified fragment with the scene's detail spread thin, and thin
+%   detail is what this model calls generated. Anything above about 1300px read
+%   as AI and anything below about 1200px as real, whatever it actually was.
+%
+%   Export mode then writes OUTDIR/temp_features.csv
 %   and OUTDIR/dsp_visuals.png and returns immediately - no window, no Python
 %   call. An image below the normalisation floor prints TOOSMALL and returns
 %   without a feature vector: it is outside the model's operating range, and a
@@ -56,14 +63,38 @@ function demo_image(imgPath, outDir)
 
     %% ------------------------------------------------- measure, in MATLAB
     original = imread(imgPath);
-    [features, crop, grayD] = extractImageFeatures(imgPath, 'crop');
+
+    % Normalise exactly as the training set was - see the note above on why
+    % measuring the raw upload is not an option. The temporary file is the
+    % thing that gets measured; the original is kept only to show.
+    workDir = tempname;
+    mkdir(workDir);
+    cleanupWork = onCleanup(@() rmdir(workDir, 's'));  %#ok<NASGU> - fires on exit
+    normPath = fullfile(workDir, 'normalised_input.jpg');
+
+    [okNorm, normInfo] = normalize_image(imgPath, normPath, normalize_defaults());
+    if ~okNorm
+        [hs, ws, ~] = size(original);
+        fprintf(2, ['\n  NO VERDICT. This image is %dx%d, below the %dpx short side\n' ...
+                    '  the normalisation needs. It cannot be given the treatment the\n' ...
+                    '  training set received, and upscaling it would low-pass filter\n' ...
+                    '  it into looking generated. Declining is the honest answer.\n'], ...
+                ws, hs, floorSideOf(normalize_defaults()));
+        return;
+    end
+
+    [features, crop, grayD] = extractImageFeatures(normPath, 'crop');
 
     % One row, no label - predict_image.py expects exactly the 230 features.
     writematrix(features, FEATURES_CSV);
 
     [~, name, ext] = fileparts(imgPath);
-    fprintf('\nMeasured %s%s -> %d features -> handing to Python\n\n', ...
+    fprintf('\nMeasured %s%s -> %d features -> handing to Python\n', ...
             name, ext, numel(features));
+    fprintf(['  over a %.0fpx window of the original, resampled to the one scale\n' ...
+             '  the model was trained at, so the verdict cannot follow the size of\n' ...
+             '  the file (%s mode).\n\n'], ...
+            normInfo.analysedSide, normInfo.opts.scaleMode);
 
     %% ------------------------------------------------- classify, in Python
     cmd = sprintf('python "%s" "%s"', PY_SCRIPT, FEATURES_CSV);
@@ -91,11 +122,6 @@ function demo_image(imgPath, outDir)
     end
 
     [h, w, ~] = size(original);
-    if h < 256 || w < 256
-        fprintf(2, ['  UNRELIABLE: image is %dx%d, smaller than the 256x256\n' ...
-                    '  analysis window, so it was scaled up before measurement.\n' ...
-                    '  Every training image was large enough to crop.\n'], w, h);
-    end
 
     %% -------------------------------------------------- DSP intermediates
     spectrum = log1p(abs(fftshift(fft2(grayD))));
@@ -126,7 +152,8 @@ function demo_image(imgPath, outDir)
 
         subplot(2,3,2);
         imshow(crop);
-        title({'Analysis crop  256x256', 'native scale, no resampling'}, ...
+        title({'Analysis crop  256x256', ...
+               sprintf('normalised from a %.0fpx window', normInfo.analysedSide)}, ...
               'FontSize', 11);
 
         subplot(2,3,3);
@@ -223,6 +250,7 @@ function exportForGui(imgPath, outDir)
 %   whether a stage actually succeeded:
 %
 %       DIMS <width> <height>
+%       SCALE <analysedSide> <preScale>
 %       CSV <path>            the 230 features, one row, no header
 %       VISUALS <path>        the four-panel PNG, or the word  none
 %       DONE
@@ -247,21 +275,28 @@ function exportForGui(imgPath, outDir)
     fprintf('DIMS %d %d\n', w, h);
 
     % The model was trained on normalised images, so a raw upload has to go
-    % through the identical treatment before it is measured. Without this the
-    % detector is asked about a kind of picture it has never seen: a 2000px
-    % photograph cropped at native scale carries far more fine detail than a
-    % 320px training image, and fine detail is what it reads. normalize_image
-    % is the same function normalize_folder used to build the training set.
+    % through the identical treatment before it is measured - and, since the
+    % treatment now fixes the content scale, at the same scale as well.
+    % normalize_image is the same function normalize_folder used to build the
+    % training set, and normalize_defaults holds the one set of numbers, so
+    % the demo and the training set cannot be treated differently.
+    opts = normalize_defaults();
     normPath = fullfile(outDir, 'normalised_input.jpg');
-    if ~normalize_image(imgPath, normPath)
+    [okNorm, info] = normalize_image(imgPath, normPath, opts);
+    if ~okNorm
         % Not an error - the image is below the model's operating range, and
         % upscaling it would low-pass filter it into looking generated. The
         % GUI reports no verdict rather than a confident wrong one.
-        fprintf('TOOSMALL %d %d\n', w, h);
+        fprintf('TOOSMALL %d %d %d\n', w, h, floorSideOf(opts));
         fprintf('DONE\n');
         return;
     end
     fprintf('NORMALISED %s\n', normPath);
+    % What the verdict was actually formed from: the side of the ORIGINAL, in
+    % its own pixels, that the measured window covers. The GUI shows it, so a
+    % viewer can see the measurement is taken at one scale for every upload
+    % rather than wherever the file's resolution happened to put it.
+    fprintf('SCALE %.1f %.4f\n', info.analysedSide, info.preScale);
 
     % Same function the training set was built with, so the numbers the GUI
     % scores can never drift from the numbers the model learned.
@@ -340,5 +375,16 @@ function exportPanels(crop, grayD, pngPath)
         exportgraphics(fig, pngPath, 'Resolution', 150, 'BackgroundColor', 'white');
     else
         print(fig, pngPath, '-dpng', '-r150');
+    end
+end
+
+
+function side = floorSideOf(opts)
+%FLOORSIDEOF  The short side below which normalize_image declines an image.
+
+    if strcmpi(opts.scaleMode, 'shortside')
+        side = opts.scaleSide;
+    else
+        side = opts.cropSide;
     end
 end

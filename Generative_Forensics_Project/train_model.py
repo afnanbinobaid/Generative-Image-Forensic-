@@ -306,7 +306,19 @@ def main():
     }, OUT_PATH)
 
     print(f"\nSaved {OUT_PATH.resolve()}")
-    print("Next: demo_image in MATLAB, which extracts features and calls "
+    print()
+    print("Next, before trusting any of the numbers above:")
+    print('  matlab -batch "scale_sweep(\'Dataset/Real_Images\', 40)"')
+    print("  python scale_sweep.py scale_sweep.csv --label real")
+    print()
+    print("  Test accuracy cannot see a detector that reads image size rather")
+    print("  than origin - each test image appears at one resolution, and in")
+    print("  this dataset resolution and label are confounded, so reading it")
+    print("  SCORES WELL here and fails on every image a person uploads. The")
+    print("  sweep scores the same photograph at several resolutions, which is")
+    print("  the only way that failure becomes visible.")
+    print()
+    print("Then: demo_image in MATLAB, which extracts features and calls "
           "predict_image.py for the verdict.")
 
 

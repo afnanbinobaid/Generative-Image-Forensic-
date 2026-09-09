@@ -1,9 +1,10 @@
-function normalize_dataset(outRoot, cropSide, targetSide, quality)
+function normalize_dataset(outRoot, varargin)
 %NORMALIZE_DATASET  Strip the container confound before measuring anything.
 %
 %   normalize_dataset
 %   normalize_dataset('Dataset_norm')
-%   normalize_dataset('Dataset_norm', 448, 320, 85)
+%   normalize_dataset('Dataset_norm', opts)          opts from normalize_defaults
+%   normalize_dataset('Dataset_norm', 448, 320, 85)  legacy positional form
 %
 %   audit_encoding.py found this dataset separable at ROC-AUC 0.9969 by a
 %   classifier that never reads a pixel - better than the 0.961 the DSP
@@ -84,18 +85,47 @@ function normalize_dataset(outRoot, cropSide, targetSide, quality)
 %   EXPECT THE ACCURACY TO FALL. That fall is the measurement: the share of
 %   the old 89.4% that was provenance rather than generation. Report both.
 %
-%   TWO LIMITS THIS CANNOT FIX, both of which belong in the write-up:
-%     - Field of view. A crop covers a different fraction of a 1024px frame
-%       than of a 500px one, so the classes still see different amounts of
-%       scene. Only a dataset with matched native resolutions fixes that.
+%   THE FIELD-OF-VIEW LIMIT IS NO LONGER LEFT STANDING
+%
+%   This used to end with "a crop covers a different fraction of a 1024px frame
+%   than of a 500px one - only a dataset with matched native resolutions fixes
+%   that". It was not a footnote. It was the whole failure: the detector went
+%   on to read upload resolution rather than origin, calling every image above
+%   about 1300px generated and everything below about 1200px real, whatever it
+%   actually was, because detail-per-pixel in a native-scale crop falls
+%   monotonically as the source gets bigger and the two classes' native widths
+%   did not overlap (real 450-500, AI 512-1024).
+%
+%   normalize_image's step 1 closes it: the whole frame is resampled to a fixed
+%   short side BEFORE the crop, so every image - a 500px thumbnail or a 6000px
+%   camera file - is measured over the same fraction of the picture. See
+%   scale_sweep.m, which measures what is left of the effect, and
+%   normalize_defaults.m, where the mode is set.
+%
+%   TWO LIMITS THAT REMAIN, both of which belong in the write-up:
+%     - Resample factor. The field of view is equal now, but a 6000px source
+%       reaches it through a 12x downsample and a 460px source through none,
+%       and that difference is still faintly readable. The scale ladder in
+%       make_augmented spreads it across both classes; only matched native
+%       resolutions removes it.
 %     - Signal above the new Nyquist is gone. The resample low-passes both
 %       classes equally, so it adds no confound, but any generation artefact
 %       living in the top 1.4x of the spectrum is no longer measurable.
 
-    if nargin < 1 || isempty(outRoot),    outRoot    = 'Dataset_norm'; end
-    if nargin < 2 || isempty(cropSide),   cropSide   = 448;            end
-    if nargin < 3 || isempty(targetSide), targetSide = 320;            end
-    if nargin < 4 || isempty(quality),    quality    = 85;             end
+    if nargin < 1 || isempty(outRoot), outRoot = 'Dataset_norm'; end
+
+    if numel(varargin) == 1 && isstruct(varargin{1})
+        opts = normalize_defaults(varargin{1});
+    else
+        over  = struct();
+        names = {'cropSide', 'targetSide', 'quality'};
+        for i = 1:min(numel(varargin), numel(names))
+            if ~isempty(varargin{i})
+                over.(names{i}) = varargin{i};
+            end
+        end
+        opts = normalize_defaults(over);
+    end
 
     classes = {'Real_Images', 'AI_Images'};
     srcRoot = 'Dataset';
@@ -106,19 +136,26 @@ function normalize_dataset(outRoot, cropSide, targetSide, quality)
     fprintf('======================================================================\n');
     fprintf('  source      : %s\n', fullfile(pwd, srcRoot));
     fprintf('  destination : %s   (created; nothing is overwritten)\n', fullfile(pwd, outRoot));
-    fprintf('  crop        : %d x %d, native scale, no resampling\n', cropSide, cropSide);
+    if strcmpi(opts.scaleMode, 'shortside')
+        fprintf('  scale       : whole frame -> %dpx short side FIRST, so every\n', ...
+                opts.scaleSide);
+        fprintf('                image is measured over the same fraction of itself\n');
+    else
+        fprintf(2, '  scale       : NATIVE - no pre-scaling. This is the mode that made\n');
+        fprintf(2, '                the verdict track upload resolution; see scale_sweep.m\n');
+    end
+    fprintf('  crop        : %d x %d\n', opts.cropSide, opts.cropSide);
     fprintf('  resample    : -> %d (%.2fx), one factor for both classes\n', ...
-            targetSide, cropSide / targetSide);
+            opts.targetSide, opts.cropSide / opts.targetSide);
     fprintf('  chroma      : decimated 2x explicitly, both classes\n');
-    fprintf('  encode      : JPEG quality %d, .jpg, both classes\n\n', quality);
+    fprintf('  encode      : JPEG quality %d, .jpg, both classes\n\n', opts.quality);
 
     total = struct('written', 0, 'existed', 0, 'skippedSmall', 0, ...
                    'skippedAug', 0, 'failed', 0);
 
     for k = 1:numel(classes)
         s = normalize_folder(fullfile(pwd, srcRoot,  classes{k}), ...
-                             fullfile(pwd, outRoot, classes{k}), ...
-                             cropSide, targetSide, quality);
+                             fullfile(pwd, outRoot, classes{k}), opts);
         fprintf('\n');
 
         for f = {'written', 'existed', 'skippedSmall', 'skippedAug', 'failed'}
@@ -135,11 +172,26 @@ function normalize_dataset(outRoot, cropSide, targetSide, quality)
                     '  upscaled. Upscaling is a low-pass filter and would reintroduce the\n' ...
                     '  confound this exists to remove. If the drops fall mostly in one\n' ...
                     '  class, say so when reporting - it is a selection effect.\n'], ...
-                total.skippedSmall, cropSide);
+                total.skippedSmall, floorOf(opts));
     end
 
     fprintf('\n  Next:\n');
     fprintf('    python audit_encoding.py %s/Real_Images %s/AI_Images\n', outRoot, outRoot);
     fprintf('    -> expect ROC-AUC near 0.50. Above ~0.65 means a container cue\n');
-    fprintf('       survived and must be found before retraining.\n\n');
+    fprintf('       survived and must be found before retraining.\n');
+    fprintf('    after retraining:\n');
+    fprintf('    matlab -batch "scale_sweep(''Dataset/Real_Images'')"\n');
+    fprintf('    python scale_sweep.py scale_sweep.csv\n');
+    fprintf('    -> the verdict must not follow the resolution of the upload.\n\n');
+end
+
+
+function side = floorOf(opts)
+%FLOOROF  The short side below which an image is declined, for reporting.
+
+    if strcmpi(opts.scaleMode, 'shortside')
+        side = opts.scaleSide;
+    else
+        side = opts.cropSide;
+    end
 end
