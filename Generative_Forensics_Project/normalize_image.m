@@ -43,7 +43,13 @@ function ok = normalize_image(srcPath, dstPath, cropSide, targetSide, quality)
     if nargin < 4 || isempty(targetSide), targetSide = 320; end
     if nargin < 5 || isempty(quality),    quality    = 85;  end
 
-    img = toUint8Rgb(imread(srcPath));
+    % Two outputs, not one. imread called with a single output returns an
+    % indexed image's index matrix and silently discards its colormap, so the
+    % indices - which are palette positions, not intensities - would be
+    % measured as if they were grey levels. ImageNet carries a handful of
+    % palette files under a .JPEG extension.
+    [raw, map] = imread(srcPath);
+    img = toUint8Rgb(raw, map);
 
     [h, w, ~] = size(img);
     if h < cropSide || w < cropSide
@@ -62,10 +68,15 @@ end
 %  Local functions
 %  ================================================================
 
-function img = toUint8Rgb(img)
+function img = toUint8Rgb(img, map)
 %TOUINT8RGB  Force any imread output into 3-channel uint8 RGB.
 %   Matches extractImageFeatures.m, so the normalised image is built on the
-%   same convention the features are measured with.
+%   same convention the features are measured with, with one addition: an
+%   indexed image is resolved through its colormap first.
+
+    if nargin >= 2 && ~isempty(map)
+        img = im2uint8(ind2rgb(img, map));
+    end
 
     if ~isa(img, 'uint8')
         img = im2uint8(img);
